@@ -154,6 +154,7 @@ function initializeDatabase() {
       screenshot_path TEXT,
       pictures_path TEXT,
       lighburn_path TEXT,
+      carbon_footprint REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -162,6 +163,17 @@ function initializeDatabase() {
       console.error('Error creating orders table:', err);
     } else {
       console.log('Orders table ready');
+      // Add carbon_footprint column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN carbon_footprint REAL`, (alterErr) => {
+        if (alterErr) {
+          // Column might already exist, ignore error
+          if (!alterErr.message.includes('duplicate column')) {
+            console.error('Note: carbon_footprint column may already exist');
+          }
+        } else {
+          console.log('Added carbon_footprint column to orders table');
+        }
+      });
     }
   });
 
@@ -660,7 +672,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
   { name: 'lighburn', maxCount: 1 }
 ]), async (req, res) => {
   const { id } = req.params;
-  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, carbonFootprint } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -675,6 +687,12 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
   const priceNum = parseFloat(price);
   if (isNaN(priceNum) || priceNum < 0) {
     return res.status(400).json({ error: 'Invalid price' });
+  }
+
+  // Parse carbon footprint if provided
+  const carbonFootprintNum = carbonFootprint ? parseFloat(carbonFootprint) : null;
+  if (carbonFootprint && (isNaN(carbonFootprintNum) || carbonFootprintNum < 0)) {
+    return res.status(400).json({ error: 'Invalid carbon footprint value' });
   }
 
   try {
@@ -706,6 +724,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
           customer_name = ?, phone = ?, sales = ?, notes = ?, due_date = ?,
+          carbon_footprint = ?,
           updated_at = CURRENT_TIMESTAMP${fileUpdateSQL}
       WHERE id = ?
     `;
@@ -713,6 +732,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
     const values = [
       collection, orderStatus, product, priceNum,
       customerName, phone, sales, notes || null, dueDate,
+      carbonFootprintNum,
       ...fileValues,
       id
     ];
