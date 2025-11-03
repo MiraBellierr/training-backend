@@ -3,6 +3,7 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const path = require('path');
+const archiver = require('archiver');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -155,6 +156,7 @@ function initializeDatabase() {
       pictures_path TEXT,
       lighburn_path TEXT,
       carbon_footprint REAL,
+      quantity INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -172,6 +174,18 @@ function initializeDatabase() {
           }
         } else {
           console.log('Added carbon_footprint column to orders table');
+        }
+      });
+      
+      // Add quantity column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN quantity INTEGER DEFAULT 1`, (alterErr) => {
+        if (alterErr) {
+          // Column might already exist, ignore error
+          if (!alterErr.message.includes('duplicate column')) {
+            console.error('Note: quantity column may already exist');
+          }
+        } else {
+          console.log('Added quantity column to orders table');
         }
       });
     }
@@ -525,14 +539,14 @@ app.get('/api/orders/:id', authenticateToken, (req, res) => {
 
 // POST endpoint to create new order with file uploads (PROTECTED)
 app.post('/api/orders', authenticateToken, upload.fields([
-  { name: 'screenshot', maxCount: 1 },
-  { name: 'pictures', maxCount: 5 },
-  { name: 'lighburn', maxCount: 1 }
+  { name: 'screenshot', maxCount: 100 },
+  { name: 'pictures', maxCount: 100 },
+  { name: 'lighburn', maxCount: 100 }
 ]), (req, res) => {
   console.log('Received order creation request');
   console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
   
-  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -550,6 +564,12 @@ app.post('/api/orders', authenticateToken, upload.fields([
     return res.status(400).json({ error: 'Invalid price' });
   }
 
+  // Validate quantity
+  const quantityNum = quantity ? parseInt(quantity) : 1;
+  if (isNaN(quantityNum) || quantityNum < 1) {
+    return res.status(400).json({ error: 'Invalid quantity' });
+  }
+
   // Process uploaded files
   const files = req.files;
   const screenshotPath = files?.screenshot?.[0]?.path;
@@ -565,15 +585,15 @@ app.post('/api/orders', authenticateToken, upload.fields([
     INSERT INTO orders (
       order_no, date, time, collection, order_status, product, 
       price, customer_name, phone, sales, notes, due_date,
-      screenshot_path, pictures_path, lighburn_path
+      screenshot_path, pictures_path, lighburn_path, quantity
     ) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, product,
     priceNum, customerName, phone, sales, notes || null, dueDate,
-    getRelativePath(screenshotPath), getRelativePath(picturesPath), getRelativePath(lighburnPath)
+    getRelativePath(screenshotPath), getRelativePath(picturesPath), getRelativePath(lighburnPath), quantityNum
   ], async function(err) {
     if (err) {
       console.error('Error inserting order:', err);
@@ -667,12 +687,12 @@ app.post('/api/orders', authenticateToken, upload.fields([
 
 // PUT endpoint to update order with file uploads (PROTECTED)
 app.put('/api/orders/:id', authenticateToken, upload.fields([
-  { name: 'screenshot', maxCount: 1 },
-  { name: 'pictures', maxCount: 5 },
-  { name: 'lighburn', maxCount: 1 }
+  { name: 'screenshot', maxCount: 100 },
+  { name: 'pictures', maxCount: 100 },
+  { name: 'lighburn', maxCount: 100 }
 ]), async (req, res) => {
   const { id } = req.params;
-  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, carbonFootprint } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -693,6 +713,12 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
   const carbonFootprintNum = carbonFootprint ? parseFloat(carbonFootprint) : null;
   if (carbonFootprint && (isNaN(carbonFootprintNum) || carbonFootprintNum < 0)) {
     return res.status(400).json({ error: 'Invalid carbon footprint value' });
+  }
+
+  // Validate quantity
+  const quantityNum = quantity ? parseInt(quantity) : 1;
+  if (isNaN(quantityNum) || quantityNum < 1) {
+    return res.status(400).json({ error: 'Invalid quantity' });
   }
 
   try {
@@ -724,7 +750,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
           customer_name = ?, phone = ?, sales = ?, notes = ?, due_date = ?,
-          carbon_footprint = ?,
+          carbon_footprint = ?, quantity = ?,
           updated_at = CURRENT_TIMESTAMP${fileUpdateSQL}
       WHERE id = ?
     `;
@@ -732,7 +758,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
     const values = [
       collection, orderStatus, product, priceNum,
       customerName, phone, sales, notes || null, dueDate,
-      carbonFootprintNum,
+      carbonFootprintNum, quantityNum,
       ...fileValues,
       id
     ];
@@ -782,7 +808,7 @@ app.delete('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Download files endpoint (PROTECTED)
+// Download files endpoint (PROTECTED) - returns zip for multiple files
 app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
   const { id, type } = req.params;
   
@@ -796,35 +822,73 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    let relativePath;
+    let relativePaths = [];
+    let zipFileName = '';
+    
     switch (type) {
       case 'screenshot':
-        relativePath = order.screenshot_path;
+        if (order.screenshot_path) {
+          relativePaths = order.screenshot_path.split(',').filter(p => p);
+        }
+        zipFileName = `order_${order.order_no}_screenshots.zip`;
         break;
       case 'pictures':
-        relativePath = order.pictures_path?.split(',')[0]; // Send first picture
+        if (order.pictures_path) {
+          relativePaths = order.pictures_path.split(',').filter(p => p);
+        }
+        zipFileName = `order_${order.order_no}_pictures.zip`;
         break;
       case 'lighburn':
-        relativePath = order.lighburn_path;
+        if (order.lighburn_path) {
+          relativePaths = order.lighburn_path.split(',').filter(p => p);
+        }
+        zipFileName = `order_${order.order_no}_lighburn.zip`;
         break;
       default:
         return res.status(400).json({ error: 'Invalid file type' });
     }
 
-    if (!relativePath) {
-      return res.status(404).json({ error: 'File not found' });
+    if (relativePaths.length === 0) {
+      return res.status(404).json({ error: 'No files found' });
     }
 
-    // Convert relative path to absolute path
-    const absolutePath = getAbsolutePath(relativePath);
+    // Convert relative paths to absolute paths and check if they exist
+    const existingPaths = absolutePaths.filter(p => fs.existsSync(p));
     
-    // Check if file exists
-    if (!fs.existsSync(absolutePath)) {
-      console.error('File not found:', absolutePath);
-      return res.status(404).json({ error: 'File not found on server' });
+    if (existingPaths.length === 0) {
+      console.error('No files found on server');
+      return res.status(404).json({ error: 'Files not found on server' });
     }
 
-    res.download(absolutePath);
+    // If only one file, send it directly
+    if (existingPaths.length === 1) {
+      return res.download(existingPaths[0]);
+    }
+
+    // Multiple files - create zip
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFileName}"`);
+
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
+
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      res.status(500).json({ error: 'Failed to create zip file' });
+    });
+
+    // Pipe archive to response
+    archive.pipe(res);
+
+    // Add files to archive
+    existingPaths.forEach((filePath, index) => {
+      const fileName = path.basename(filePath);
+      archive.file(filePath, { name: fileName });
+    });
+
+    // Finalize archive
+    archive.finalize();
   });
 });
 
