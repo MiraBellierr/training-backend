@@ -77,6 +77,27 @@ const upload = multer({
   }
 });
 
+// Helper function to convert absolute path to relative path for database storage
+function getRelativePath(absolutePath) {
+  if (!absolutePath) return null;
+  // Remove the base directory path, keep only uploads/... part
+  const uploadsIndex = absolutePath.indexOf('uploads');
+  if (uploadsIndex !== -1) {
+    return absolutePath.substring(uploadsIndex);
+  }
+  return absolutePath;
+}
+
+// Helper function to get absolute path from relative path
+function getAbsolutePath(relativePath) {
+  if (!relativePath) return null;
+  // If already absolute, return as is
+  if (path.isAbsolute(relativePath)) {
+    return relativePath;
+  }
+  return path.join(__dirname, relativePath);
+}
+
 // Utility function to clean up old files
 async function cleanupOldFiles(orderId) {
   const orderDir = path.join(__dirname, 'uploads', orderId.toString());
@@ -540,7 +561,7 @@ app.post('/api/orders', authenticateToken, upload.fields([
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, product,
     priceNum, customerName, phone, sales, notes || null, dueDate,
-    screenshotPath || null, picturesPath || null, lighburnPath || null
+    getRelativePath(screenshotPath), getRelativePath(picturesPath), getRelativePath(lighburnPath)
   ], async function(err) {
     if (err) {
       console.error('Error inserting order:', err);
@@ -567,7 +588,7 @@ app.post('/api/orders', authenticateToken, upload.fields([
           const filename = path.basename(screenshotPath);
           const newPath = path.join(orderFolder, filename);
           fs.renameSync(screenshotPath, newPath);
-          newScreenshotPath = newPath;
+          newScreenshotPath = getRelativePath(newPath);
         }
 
         if (picturesPath) {
@@ -576,7 +597,7 @@ app.post('/api/orders', authenticateToken, upload.fields([
             const filename = path.basename(picPath);
             const newPath = path.join(orderFolder, filename);
             fs.renameSync(picPath, newPath);
-            return newPath;
+            return getRelativePath(newPath);
           });
           newPicturesPath = newPicturePaths.join(',');
         }
@@ -585,10 +606,10 @@ app.post('/api/orders', authenticateToken, upload.fields([
           const filename = path.basename(lighburnPath);
           const newPath = path.join(orderFolder, filename);
           fs.renameSync(lighburnPath, newPath);
-          newLighburnPath = newPath;
+          newLighburnPath = getRelativePath(newPath);
         }
 
-        // Update database with new paths
+        // Update database with new paths (already relative)
         const updateSql = 'UPDATE orders SET screenshot_path = ?, pictures_path = ?, lighburn_path = ? WHERE id = ?';
         db.run(updateSql, [newScreenshotPath, newPicturesPath, newLighburnPath, orderId], (updateErr) => {
           if (updateErr) {
@@ -663,21 +684,22 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
       await cleanupOldFiles(id);
     }
 
-    // Process uploaded files
+    // Process uploaded files - store relative paths
     let fileUpdateSQL = '';
     const fileValues = [];
 
     if (files?.screenshot?.[0]) {
       fileUpdateSQL += ', screenshot_path = ?';
-      fileValues.push(files.screenshot[0].path);
+      fileValues.push(getRelativePath(files.screenshot[0].path));
     }
     if (files?.pictures?.length) {
       fileUpdateSQL += ', pictures_path = ?';
-      fileValues.push(files.pictures.map(file => file.path).join(','));
+      const relativePaths = files.pictures.map(file => getRelativePath(file.path)).join(',');
+      fileValues.push(relativePaths);
     }
     if (files?.lighburn?.[0]) {
       fileUpdateSQL += ', lighburn_path = ?';
-      fileValues.push(files.lighburn[0].path);
+      fileValues.push(getRelativePath(files.lighburn[0].path));
     }
 
     const sql = `
@@ -754,26 +776,35 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    let filePath;
+    let relativePath;
     switch (type) {
       case 'screenshot':
-        filePath = order.screenshot_path;
+        relativePath = order.screenshot_path;
         break;
       case 'pictures':
-        filePath = order.pictures_path?.split(',')[0]; // Send first picture
+        relativePath = order.pictures_path?.split(',')[0]; // Send first picture
         break;
       case 'lighburn':
-        filePath = order.lighburn_path;
+        relativePath = order.lighburn_path;
         break;
       default:
         return res.status(400).json({ error: 'Invalid file type' });
     }
 
-    if (!filePath) {
+    if (!relativePath) {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    res.download(filePath);
+    // Convert relative path to absolute path
+    const absolutePath = getAbsolutePath(relativePath);
+    
+    // Check if file exists
+    if (!fs.existsSync(absolutePath)) {
+      console.error('File not found:', absolutePath);
+      return res.status(404).json({ error: 'File not found on server' });
+    }
+
+    res.download(absolutePath);
   });
 });
 
