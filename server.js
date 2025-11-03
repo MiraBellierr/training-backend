@@ -91,8 +91,8 @@ function initializeDatabase() {
 
 // Create default admin user (username: admin, password: admin123)
 async function createDefaultAdmin() {
-  const username = 'admin';
-  const password = 'admin123';
+  const username = process.env.ADMIN_USERNAME;
+  const password = process.env.ADMIN_PASSWORD;
   
   db.get('SELECT * FROM admin_users WHERE username = ?', [username], async (err, row) => {
     if (err) {
