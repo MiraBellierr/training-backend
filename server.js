@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
@@ -7,7 +8,7 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = 3001;
-const JWT_SECRET = 'your-secret-key-change-this-in-production'; // Change this!
+const JWT_SECRET = process.env.JWT_TOKEN; // Change this!
 
 // Middleware
 app.use(cors());
