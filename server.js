@@ -138,6 +138,57 @@ function authenticateToken(req, res, next) {
 
 // ============= AUTH ENDPOINTS =============
 
+// Create new admin endpoint (PROTECTED - only existing admins can create new admins)
+app.post('/api/admin/create', authenticateToken, async (req, res) => {
+  const { username, email, password } = req.body;
+
+  // Validation
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: 'Username, email and password are required' });
+  }
+
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+  }
+
+  // Check if username already exists
+  db.get('SELECT * FROM admin_users WHERE username = ?', [username], async (err, row) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    if (row) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+
+    // Add email field to admin_users table if it doesn't exist
+    db.run(`
+      ALTER TABLE admin_users 
+      ADD COLUMN email TEXT DEFAULT NULL
+    `, (err) => {
+      // Ignore error if column already exists
+      const passwordHash = bcrypt.hashSync(password, 10);
+
+      // Insert new admin
+      db.run(
+        'INSERT INTO admin_users (username, email, password_hash) VALUES (?, ?, ?)',
+        [username, email, passwordHash],
+        (err) => {
+          if (err) {
+            console.error('Error creating new admin:', err);
+            return res.status(500).json({ error: 'Failed to create admin account' });
+          }
+
+          res.status(201).json({
+            message: 'Admin account created successfully'
+          });
+        }
+      );
+    });
+  });
+});
+
 // Admin login endpoint
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
