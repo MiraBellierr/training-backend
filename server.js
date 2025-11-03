@@ -34,7 +34,20 @@ fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
 // File upload configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const orderFolder = path.join(__dirname, 'uploads', req.params.orderId || 'temp');
+    // Extract orderId from URL path if available (for PUT requests)
+    const urlParts = req.url.split('/');
+    const ordersIndex = urlParts.indexOf('orders');
+    let orderId = 'temp';
+    
+    if (ordersIndex !== -1 && urlParts[ordersIndex + 1]) {
+      // Extract the ID from URL (e.g., /api/orders/123)
+      const potentialId = urlParts[ordersIndex + 1];
+      if (!isNaN(potentialId)) {
+        orderId = potentialId;
+      }
+    }
+    
+    const orderFolder = path.join(__dirname, 'uploads', orderId);
     // Create directory if it doesn't exist
     fs.mkdirSync(orderFolder, { recursive: true });
     cb(null, orderFolder);
@@ -65,7 +78,7 @@ const upload = multer({
 });
 
 // Utility function to clean up old files
-async function cleanupOldFiles(orderId, files) {
+async function cleanupOldFiles(orderId) {
   const orderDir = path.join(__dirname, 'uploads', orderId.toString());
   if (fs.existsSync(orderDir)) {
     const currentFiles = await fs.promises.readdir(orderDir);
@@ -483,6 +496,9 @@ app.post('/api/orders', authenticateToken, upload.fields([
   { name: 'pictures', maxCount: 5 },
   { name: 'lighburn', maxCount: 1 }
 ]), (req, res) => {
+  console.log('Received order creation request');
+  console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
+  
   const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate } = req.body;
 
   // Validation
@@ -525,16 +541,77 @@ app.post('/api/orders', authenticateToken, upload.fields([
     orderNo, date, time, collection, orderStatus, product,
     priceNum, customerName, phone, sales, notes || null, dueDate,
     screenshotPath || null, picturesPath || null, lighburnPath || null
-  ], function(err) {
+  ], async function(err) {
     if (err) {
       console.error('Error inserting order:', err);
       return res.status(500).json({ error: 'Failed to create order' });
     }
 
+    const orderId = this.lastID;
+
+    // Move files from temp to actual order folder
+    try {
+      const tempFolder = path.join(__dirname, 'uploads', 'temp');
+      const orderFolder = path.join(__dirname, 'uploads', orderId.toString());
+      
+      if (fs.existsSync(tempFolder)) {
+        // Create order folder
+        fs.mkdirSync(orderFolder, { recursive: true });
+        
+        // Move files and update paths
+        let newScreenshotPath = screenshotPath;
+        let newPicturesPath = picturesPath;
+        let newLighburnPath = lighburnPath;
+
+        if (screenshotPath) {
+          const filename = path.basename(screenshotPath);
+          const newPath = path.join(orderFolder, filename);
+          fs.renameSync(screenshotPath, newPath);
+          newScreenshotPath = newPath;
+        }
+
+        if (picturesPath) {
+          const picturePaths = picturesPath.split(',');
+          const newPicturePaths = picturePaths.map(picPath => {
+            const filename = path.basename(picPath);
+            const newPath = path.join(orderFolder, filename);
+            fs.renameSync(picPath, newPath);
+            return newPath;
+          });
+          newPicturesPath = newPicturePaths.join(',');
+        }
+
+        if (lighburnPath) {
+          const filename = path.basename(lighburnPath);
+          const newPath = path.join(orderFolder, filename);
+          fs.renameSync(lighburnPath, newPath);
+          newLighburnPath = newPath;
+        }
+
+        // Update database with new paths
+        const updateSql = 'UPDATE orders SET screenshot_path = ?, pictures_path = ?, lighburn_path = ? WHERE id = ?';
+        db.run(updateSql, [newScreenshotPath, newPicturesPath, newLighburnPath, orderId], (updateErr) => {
+          if (updateErr) {
+            console.error('Error updating file paths:', updateErr);
+          }
+        });
+
+        // Clean up temp folder
+        try {
+          fs.rmdirSync(tempFolder);
+        } catch (e) {
+          // Ignore if folder not empty or doesn't exist
+        }
+      }
+    } catch (moveErr) {
+      console.error('Error moving files:', moveErr);
+      // Continue even if file move fails
+    }
+
     res.status(201).json({
       message: 'Order created successfully',
       order: {
-        id: this.lastID,
+        id: orderId,
         order_no: orderNo,
         date,
         time,
@@ -703,6 +780,21 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// Error handling middleware for multer
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    console.error('Multer error:', err);
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File size too large. Maximum is 10MB.' });
+    }
+    return res.status(400).json({ error: `Upload error: ${err.message}` });
+  } else if (err) {
+    console.error('General error:', err);
+    return res.status(500).json({ error: err.message || 'An error occurred' });
+  }
+  next();
 });
 
 // Start server
