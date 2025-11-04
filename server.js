@@ -409,6 +409,122 @@ app.post('/api/admin/change-password', authenticateToken, async (req, res) => {
   );
 });
 
+// Get admin profile endpoint (PROTECTED)
+app.get('/api/admin/profile', authenticateToken, (req, res) => {
+  db.get(
+    'SELECT id, username, created_at FROM admin_users WHERE id = ?',
+    [req.user.id],
+    (err, user) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      res.json({
+        username: user.username,
+        email: `${user.username}@aanguscraft.com`, // Default email based on username
+        phone: '', // Can be extended later
+        role: 'Administrator',
+        company: 'Aangus Craft',
+        created_at: user.created_at
+      });
+    }
+  );
+});
+
+// Update admin profile endpoint (PROTECTED)
+app.put('/api/admin/profile', authenticateToken, async (req, res) => {
+  const { username, email, phone, company } = req.body;
+
+  if (!username) {
+    return res.status(400).json({ error: 'Username is required' });
+  }
+
+  // Check if new username is already taken by another user
+  db.get(
+    'SELECT * FROM admin_users WHERE username = ? AND id != ?',
+    [username, req.user.id],
+    (err, existingUser) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+
+      if (existingUser) {
+        return res.status(400).json({ error: 'Username already taken' });
+      }
+
+      // Update username (email, phone, company can be stored in a separate table in production)
+      db.run(
+        'UPDATE admin_users SET username = ? WHERE id = ?',
+        [username, req.user.id],
+        (err) => {
+          if (err) {
+            console.error('Error updating profile:', err);
+            return res.status(500).json({ error: 'Failed to update profile' });
+          }
+
+          res.json({
+            message: 'Profile updated successfully',
+            username: username
+          });
+        }
+      );
+    }
+  );
+});
+
+// List all admin users endpoint (PROTECTED)
+app.get('/api/admin/list', authenticateToken, (req, res) => {
+  const sql = 'SELECT id, username, created_at FROM admin_users ORDER BY created_at DESC';
+
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching admins:', err);
+      return res.status(500).json({ error: 'Failed to fetch admin users' });
+    }
+
+    // Format the response to include email placeholder
+    const admins = rows.map(admin => ({
+      id: admin.id,
+      username: admin.username,
+      email: `${admin.username}@aanguscraft.com`,
+      created_at: admin.created_at
+    }));
+
+    res.json(admins);
+  });
+});
+
+// Delete admin user endpoint (PROTECTED)
+app.delete('/api/admin/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  // Prevent self-deletion
+  if (parseInt(id) === req.user.id) {
+    return res.status(400).json({ error: 'Cannot delete your own account' });
+  }
+
+  const sql = 'DELETE FROM admin_users WHERE id = ?';
+
+  db.run(sql, [id], function(err) {
+    if (err) {
+      console.error('Error deleting admin:', err);
+      return res.status(500).json({ error: 'Failed to delete admin user' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Admin user not found' });
+    }
+
+    res.json({ message: 'Admin user deleted successfully' });
+  });
+});
+
 // ============= REGISTRATION ENDPOINTS =============
 // POST endpoint to register new user (PUBLIC)
 app.post('/api/register', (req, res) => {
@@ -921,7 +1037,12 @@ app.listen(PORT, () => {
   console.log('');
   console.log('🔐 Admin endpoints:');
   console.log(`   POST   http://localhost:${PORT}/api/admin/login`);
+  console.log(`   POST   http://localhost:${PORT}/api/admin/create`);
   console.log(`   GET    http://localhost:${PORT}/api/admin/verify`);
+  console.log(`   GET    http://localhost:${PORT}/api/admin/profile`);
+  console.log(`   PUT    http://localhost:${PORT}/api/admin/profile`);
+  console.log(`   GET    http://localhost:${PORT}/api/admin/list`);
+  console.log(`   DELETE http://localhost:${PORT}/api/admin/:id`);
   console.log(`   POST   http://localhost:${PORT}/api/admin/change-password`);
   console.log('');
   console.log('📊 Protected registration endpoints (require auth):');
