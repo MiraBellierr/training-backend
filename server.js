@@ -197,6 +197,9 @@ function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
+      email TEXT,
+      phone TEXT,
+      company TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `, (err) => {
@@ -204,6 +207,26 @@ function initializeDatabase() {
       console.error('Error creating admin_users table:', err);
     } else {
       console.log('Admin users table ready');
+      
+      // Add email, phone, and company columns if they don't exist (for existing databases)
+      db.run(`ALTER TABLE admin_users ADD COLUMN email TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: email column may already exist');
+        }
+      });
+      
+      db.run(`ALTER TABLE admin_users ADD COLUMN phone TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: phone column may already exist');
+        }
+      });
+      
+      db.run(`ALTER TABLE admin_users ADD COLUMN company TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: company column may already exist');
+        }
+      });
+      
       createDefaultAdmin();
     }
   });
@@ -412,7 +435,7 @@ app.post('/api/admin/change-password', authenticateToken, async (req, res) => {
 // Get admin profile endpoint (PROTECTED)
 app.get('/api/admin/profile', authenticateToken, (req, res) => {
   db.get(
-    'SELECT id, username, created_at FROM admin_users WHERE id = ?',
+    'SELECT id, username, email, phone, company, created_at FROM admin_users WHERE id = ?',
     [req.user.id],
     (err, user) => {
       if (err) {
@@ -426,10 +449,10 @@ app.get('/api/admin/profile', authenticateToken, (req, res) => {
 
       res.json({
         username: user.username,
-        email: `${user.username}@aanguscraft.com`, // Default email based on username
-        phone: '', // Can be extended later
+        email: user.email || `${user.username}@aanguscraft.com`,
+        phone: user.phone || '+60123456789',
         role: 'Administrator',
-        company: 'Aangus Craft',
+        company: user.company || 'Aangus Craft',
         created_at: user.created_at
       });
     }
@@ -442,6 +465,16 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
 
   if (!username) {
     return res.status(400).json({ error: 'Username is required' });
+  }
+
+  // Validate email format if provided
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+
+  // Validate phone format if provided (basic validation)
+  if (phone && phone.length < 10) {
+    return res.status(400).json({ error: 'Invalid phone number' });
   }
 
   // Check if new username is already taken by another user
@@ -458,29 +491,70 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'Username already taken' });
       }
 
-      // Update username (email, phone, company can be stored in a separate table in production)
-      db.run(
-        'UPDATE admin_users SET username = ? WHERE id = ?',
-        [username, req.user.id],
-        (err) => {
-          if (err) {
-            console.error('Error updating profile:', err);
-            return res.status(500).json({ error: 'Failed to update profile' });
-          }
+      // Check if new email is already taken by another user
+      if (email) {
+        db.get(
+          'SELECT * FROM admin_users WHERE email = ? AND id != ?',
+          [email, req.user.id],
+          (err, existingEmail) => {
+            if (err) {
+              console.error('Database error:', err);
+              return res.status(500).json({ error: 'Server error' });
+            }
 
-          res.json({
-            message: 'Profile updated successfully',
-            username: username
-          });
-        }
-      );
+            if (existingEmail) {
+              return res.status(400).json({ error: 'Email already in use' });
+            }
+
+            // Update all profile fields
+            db.run(
+              'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ? WHERE id = ?',
+              [username, email, phone, company, req.user.id],
+              (err) => {
+                if (err) {
+                  console.error('Error updating profile:', err);
+                  return res.status(500).json({ error: 'Failed to update profile' });
+                }
+
+                res.json({
+                  message: 'Profile updated successfully',
+                  username: username,
+                  email: email,
+                  phone: phone,
+                  company: company
+                });
+              }
+            );
+          }
+        );
+      } else {
+        // Update without email validation
+        db.run(
+          'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ? WHERE id = ?',
+          [username, email, phone, company, req.user.id],
+          (err) => {
+            if (err) {
+              console.error('Error updating profile:', err);
+              return res.status(500).json({ error: 'Failed to update profile' });
+            }
+
+            res.json({
+              message: 'Profile updated successfully',
+              username: username,
+              email: email,
+              phone: phone,
+              company: company
+            });
+          }
+        );
+      }
     }
   );
 });
 
 // List all admin users endpoint (PROTECTED)
 app.get('/api/admin/list', authenticateToken, (req, res) => {
-  const sql = 'SELECT id, username, created_at FROM admin_users ORDER BY created_at DESC';
+  const sql = 'SELECT id, username, email, phone, company, created_at FROM admin_users ORDER BY created_at DESC';
 
   db.all(sql, [], (err, rows) => {
     if (err) {
@@ -488,11 +562,13 @@ app.get('/api/admin/list', authenticateToken, (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch admin users' });
     }
 
-    // Format the response to include email placeholder
+    // Format the response
     const admins = rows.map(admin => ({
       id: admin.id,
       username: admin.username,
-      email: `${admin.username}@aanguscraft.com`,
+      email: admin.email || `${admin.username}@aanguscraft.com`,
+      phone: admin.phone || '',
+      company: admin.company || '',
       created_at: admin.created_at
     }));
 
