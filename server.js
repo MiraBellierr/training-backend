@@ -149,6 +149,8 @@ function initializeDatabase() {
       price REAL NOT NULL,
       customer_name TEXT NOT NULL,
       phone TEXT NOT NULL,
+      city TEXT,
+      agensi TEXT,
       sales TEXT NOT NULL,
       due_date TEXT NOT NULL,
       notes TEXT,
@@ -186,6 +188,20 @@ function initializeDatabase() {
           }
         } else {
           console.log('Added quantity column to orders table');
+        }
+      });
+      
+      // Add city column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN city TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: city column may already exist');
+        }
+      });
+      
+      // Add agensi column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN agensi TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: agensi column may already exist');
         }
       });
     }
@@ -729,6 +745,30 @@ app.get('/api/orders/:id', authenticateToken, (req, res) => {
   });
 });
 
+// GET endpoint to retrieve unique customers with their details (PROTECTED)
+app.get('/api/customers', authenticateToken, (req, res) => {
+  const sql = `
+    SELECT DISTINCT 
+      customer_name, 
+      phone, 
+      city, 
+      agensi,
+      MAX(created_at) as last_order_date
+    FROM orders 
+    GROUP BY customer_name, phone, city, agensi
+    ORDER BY last_order_date DESC
+  `;
+
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching customers:', err);
+      return res.status(500).json({ error: 'Failed to fetch customers' });
+    }
+
+    res.json(rows);
+  });
+});
+
 // POST endpoint to create new order with file uploads (PROTECTED)
 app.post('/api/orders', authenticateToken, upload.fields([
   { name: 'screenshot', maxCount: 100 },
@@ -738,7 +778,7 @@ app.post('/api/orders', authenticateToken, upload.fields([
   console.log('Received order creation request');
   console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
   
-  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, quantity } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -776,15 +816,15 @@ app.post('/api/orders', authenticateToken, upload.fields([
   const sql = `
     INSERT INTO orders (
       order_no, date, time, collection, order_status, product, 
-      price, customer_name, phone, sales, notes, due_date,
+      price, customer_name, phone, city, agensi, sales, notes, due_date,
       screenshot_path, pictures_path, lighburn_path, quantity
     ) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, product,
-    priceNum, customerName, phone, sales, notes || null, dueDate,
+    priceNum, customerName, phone, city || null, agensi || null, sales, notes || null, dueDate,
     getRelativePath(screenshotPath), getRelativePath(picturesPath), getRelativePath(lighburnPath), quantityNum
   ], async function(err) {
     if (err) {
@@ -884,7 +924,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
   { name: 'lighburn', maxCount: 100 }
 ]), async (req, res) => {
   const { id } = req.params;
-  const { collection, orderStatus, product, price, customerName, phone, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -941,7 +981,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
     const sql = `
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
-          customer_name = ?, phone = ?, sales = ?, notes = ?, due_date = ?,
+          customer_name = ?, phone = ?, city = ?, agensi = ?, sales = ?, notes = ?, due_date = ?,
           carbon_footprint = ?, quantity = ?,
           updated_at = CURRENT_TIMESTAMP${fileUpdateSQL}
       WHERE id = ?
@@ -949,7 +989,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
 
     const values = [
       collection, orderStatus, product, priceNum,
-      customerName, phone, sales, notes || null, dueDate,
+      customerName, phone, city || null, agensi || null, sales, notes || null, dueDate,
       carbonFootprintNum, quantityNum,
       ...fileValues,
       id
@@ -1130,6 +1170,7 @@ app.listen(PORT, () => {
   console.log(`   POST   http://localhost:${PORT}/api/orders`);
   console.log(`   GET    http://localhost:${PORT}/api/orders`);
   console.log(`   GET    http://localhost:${PORT}/api/orders/:id`);
+  console.log(`   GET    http://localhost:${PORT}/api/customers`);
   console.log(`   PUT    http://localhost:${PORT}/api/orders/:id`);
   console.log(`   DELETE http://localhost:${PORT}/api/orders/:id`);
   console.log(`   GET    http://localhost:${PORT}/api/orders/:id/files/:type`);
