@@ -275,11 +275,25 @@ function createDefaultAdmin() {
   });
 }
 
-// Generate unique order number with INV prefix
-function generateOrderNumber() {
-  const timestamp = Date.now();
-  const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-  return `INV${timestamp}${random}`;
+// Generate unique order number with INV prefix in format: INVyear_month_numbering
+async function generateOrderNumber(db) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const prefix = `INV${year}_${month}_`;
+  
+  // Get the count of orders for this month
+  return new Promise((resolve, reject) => {
+    const sql = `SELECT COUNT(*) as count FROM orders WHERE order_no LIKE ?`;
+    db.get(sql, [`${prefix}%`], (err, row) => {
+      if (err) {
+        reject(err);
+      } else {
+        const nextNumber = (row.count + 1).toString().padStart(4, '0');
+        resolve(`${prefix}${nextNumber}`);
+      }
+    });
+  });
 }
 
 // Format date to GMT+8
@@ -774,7 +788,7 @@ app.post('/api/orders', authenticateToken, upload.fields([
   { name: 'screenshot', maxCount: 100 },
   { name: 'pictures', maxCount: 100 },
   { name: 'lighburn', maxCount: 100 }
-]), (req, res) => {
+]), async (req, res) => {
   console.log('Received order creation request');
   console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
   
@@ -809,7 +823,13 @@ app.post('/api/orders', authenticateToken, upload.fields([
   const lighburnPath = files?.lighburn?.[0]?.path;
 
   // Generate order details
-  const orderNo = generateOrderNumber();
+  let orderNo;
+  try {
+    orderNo = await generateOrderNumber(db);
+  } catch (err) {
+    console.error('Error generating order number:', err);
+    return res.status(500).json({ error: 'Failed to generate order number' });
+  }
   const date = formatDateGMT8();
   const time = formatTimeGMT8();
 
