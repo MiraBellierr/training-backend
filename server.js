@@ -206,6 +206,7 @@ function initializeDatabase() {
       phone TEXT NOT NULL,
       city TEXT,
       agensi TEXT,
+      agensi_address TEXT,
       sales TEXT NOT NULL,
       due_date TEXT NOT NULL,
       notes TEXT,
@@ -257,6 +258,15 @@ function initializeDatabase() {
       db.run(`ALTER TABLE orders ADD COLUMN agensi TEXT`, (alterErr) => {
         if (alterErr && !alterErr.message.includes('duplicate column')) {
           console.error('Note: agensi column may already exist');
+        }
+      });
+      
+      // Add agensi_address column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN agensi_address TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: agensi_address column may already exist');
+        } else {
+          console.log('Added agensi_address column to orders table');
         }
       });
     }
@@ -845,9 +855,10 @@ app.get('/api/customers', authenticateToken, (req, res) => {
       phone, 
       city, 
       agensi,
+      agensi_address,
       MAX(created_at) as last_order_date
     FROM orders 
-    GROUP BY customer_name, phone, city, agensi
+    GROUP BY customer_name, phone, city, agensi, agensi_address
     ORDER BY last_order_date DESC
   `;
 
@@ -866,7 +877,7 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   console.log('Received order creation request');
   console.log('Body:', req.body);
   
-  const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, quantity } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -905,14 +916,14 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   const sql = `
     INSERT INTO orders (
       order_no, date, time, collection, order_status, product, 
-      price, customer_name, phone, city, agensi, sales, notes, due_date, quantity
+      price, customer_name, phone, city, agensi, agensi_address, sales, notes, due_date, quantity
     ) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, product,
-    priceNum, customerName, phone, city || null, agensi || null, sales, notes || null, dueDate, quantityNum
+    priceNum, customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate, quantityNum
   ], function(err) {
     if (err) {
       console.error('Error inserting order:', err);
@@ -1052,7 +1063,7 @@ app.post('/api/orders/:id/upload/lighburn', authenticateToken, upload.fields([
 // PUT endpoint to update order data only (PROTECTED) - files uploaded separately
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
+  const { collection, orderStatus, product, price, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
 
   // Validation
   if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
@@ -1085,7 +1096,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     const sql = `
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
-          customer_name = ?, phone = ?, city = ?, agensi = ?, sales = ?, notes = ?, due_date = ?,
+          customer_name = ?, phone = ?, city = ?, agensi = ?, agensi_address = ?, sales = ?, notes = ?, due_date = ?,
           carbon_footprint = ?, quantity = ?,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
@@ -1093,7 +1104,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
 
     const values = [
       collection, orderStatus, product, priceNum,
-      customerName, phone, city || null, agensi || null, sales, notes || null, dueDate,
+      customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate,
       carbonFootprintNum, quantityNum,
       id
     ];
