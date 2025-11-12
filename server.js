@@ -246,6 +246,29 @@ function initializeDatabase() {
       createDefaultAdmin();
     }
   });
+
+  // News articles table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS news_articles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      excerpt TEXT NOT NULL,
+      content TEXT NOT NULL,
+      author TEXT NOT NULL,
+      category TEXT NOT NULL,
+      image_path TEXT,
+      featured BOOLEAN DEFAULT 0,
+      published BOOLEAN DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating news_articles table:', err);
+    } else {
+      console.log('News articles table ready');
+    }
+  });
 }
 
 function createDefaultAdmin() {
@@ -1144,6 +1167,160 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
   });
 });
 
+// ============= NEWS ENDPOINTS =============
+// GET all news articles (PUBLIC - for news page)
+app.get('/api/news', (req, res) => {
+  const sql = 'SELECT * FROM news_articles WHERE published = 1 ORDER BY created_at DESC';
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: 'Failed to fetch news articles' });
+    }
+    res.json(rows);
+  });
+});
+
+// GET single news article by ID (PUBLIC)
+app.get('/api/news/:id', (req, res) => {
+  const { id } = req.params;
+  const sql = 'SELECT * FROM news_articles WHERE id = ? AND published = 1';
+  
+  db.get(sql, [id], (err, row) => {
+    if (err) {
+      return res.status(500).json({ error: 'Failed to fetch article' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+    res.json(row);
+  });
+});
+
+// GET all news articles for admin (PROTECTED)
+app.get('/api/admin/news', authenticateToken, (req, res) => {
+  const sql = 'SELECT * FROM news_articles ORDER BY created_at DESC';
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: 'Failed to fetch news articles' });
+    }
+    res.json(rows);
+  });
+});
+
+// POST create new news article (PROTECTED)
+app.post('/api/admin/news', authenticateToken, upload.single('image'), (req, res) => {
+  const { title, excerpt, content, category, featured, published } = req.body;
+  
+  // Validation
+  if (!title || !excerpt || !content || !category) {
+    return res.status(400).json({ error: 'Title, excerpt, content, and category are required' });
+  }
+  
+  const author = req.user.username;
+  const imagePath = req.file ? getRelativePath(req.file.path) : null;
+  const isFeatured = featured === 'true' || featured === true ? 1 : 0;
+  const isPublished = published === 'true' || published === true ? 1 : 0;
+  
+  const sql = `
+    INSERT INTO news_articles (title, excerpt, content, author, category, image_path, featured, published)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  
+  db.run(sql, [title, excerpt, content, author, category, imagePath, isFeatured, isPublished], function(err) {
+    if (err) {
+      console.error('Error creating news article:', err);
+      return res.status(500).json({ error: 'Failed to create article' });
+    }
+    
+    res.status(201).json({
+      message: 'Article created successfully',
+      id: this.lastID
+    });
+  });
+});
+
+// PUT update news article (PROTECTED)
+app.put('/api/admin/news/:id', authenticateToken, upload.single('image'), (req, res) => {
+  const { id } = req.params;
+  const { title, excerpt, content, category, featured, published } = req.body;
+  
+  // Validation
+  if (!title || !excerpt || !content || !category) {
+    return res.status(400).json({ error: 'Title, excerpt, content, and category are required' });
+  }
+  
+  const imagePath = req.file ? getRelativePath(req.file.path) : undefined;
+  const isFeatured = featured === 'true' || featured === true ? 1 : 0;
+  const isPublished = published === 'true' || published === true ? 1 : 0;
+  
+  // Build update query dynamically based on whether image is uploaded
+  let sql, params;
+  if (imagePath) {
+    sql = `
+      UPDATE news_articles 
+      SET title = ?, excerpt = ?, content = ?, category = ?, image_path = ?, 
+          featured = ?, published = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `;
+    params = [title, excerpt, content, category, imagePath, isFeatured, isPublished, id];
+  } else {
+    sql = `
+      UPDATE news_articles 
+      SET title = ?, excerpt = ?, content = ?, category = ?, 
+          featured = ?, published = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `;
+    params = [title, excerpt, content, category, isFeatured, isPublished, id];
+  }
+  
+  db.run(sql, params, function(err) {
+    if (err) {
+      console.error('Error updating news article:', err);
+      return res.status(500).json({ error: 'Failed to update article' });
+    }
+    
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+    
+    res.json({ message: 'Article updated successfully' });
+  });
+});
+
+// DELETE news article (PROTECTED)
+app.delete('/api/admin/news/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  
+  // First get the article to delete its image
+  db.get('SELECT image_path FROM news_articles WHERE id = ?', [id], (err, row) => {
+    if (err) {
+      return res.status(500).json({ error: 'Failed to fetch article' });
+    }
+    
+    // Delete the article
+    db.run('DELETE FROM news_articles WHERE id = ?', [id], function(deleteErr) {
+      if (deleteErr) {
+        return res.status(500).json({ error: 'Failed to delete article' });
+      }
+      
+      if (this.changes === 0) {
+        return res.status(404).json({ error: 'Article not found' });
+      }
+      
+      // Delete associated image file if exists
+      if (row && row.image_path) {
+        const imagePath = getAbsolutePath(row.image_path);
+        if (fs.existsSync(imagePath)) {
+          fs.unlinkSync(imagePath);
+        }
+      }
+      
+      res.json({ message: 'Article deleted successfully' });
+    });
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
@@ -1194,6 +1371,14 @@ app.listen(PORT, () => {
   console.log(`   PUT    http://localhost:${PORT}/api/orders/:id`);
   console.log(`   DELETE http://localhost:${PORT}/api/orders/:id`);
   console.log(`   GET    http://localhost:${PORT}/api/orders/:id/files/:type`);
+  console.log('');
+  console.log('📰 News endpoints:');
+  console.log(`   GET    http://localhost:${PORT}/api/news (public)`);
+  console.log(`   GET    http://localhost:${PORT}/api/news/:id (public)`);
+  console.log(`   GET    http://localhost:${PORT}/api/admin/news (protected)`);
+  console.log(`   POST   http://localhost:${PORT}/api/admin/news (protected)`);
+  console.log(`   PUT    http://localhost:${PORT}/api/admin/news/:id (protected)`);
+  console.log(`   DELETE http://localhost:${PORT}/api/admin/news/:id (protected)`);
   console.log('='.repeat(50));
 });
 
