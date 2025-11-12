@@ -1143,11 +1143,17 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
     // Convert relative paths to absolute paths
     const absolutePaths = relativePaths.map(relativePath => getAbsolutePath(relativePath));
     
+    // Debug logging
+    console.log('File type:', type);
+    console.log('Relative paths:', relativePaths);
+    console.log('Absolute paths:', absolutePaths);
+    
     // Check if they exist
     const existingPaths = absolutePaths.filter(p => fs.existsSync(p));
     
     if (existingPaths.length === 0) {
       console.error('No files found on server');
+      console.error('Checked paths:', absolutePaths);
       return res.status(404).json({ error: 'Files not found on server' });
     }
 
