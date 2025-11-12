@@ -30,46 +30,82 @@ app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Ensure uploads directory exists
-fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
+const uploadsDir = path.join(__dirname, 'uploads');
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    console.log('Created uploads directory:', uploadsDir);
+  } else {
+    console.log('Uploads directory exists:', uploadsDir);
+  }
+  
+  // Check write permissions
+  fs.accessSync(uploadsDir, fs.constants.W_OK);
+  console.log('Uploads directory is writable');
+} catch (error) {
+  console.error('ERROR: Cannot create or write to uploads directory:', error);
+  console.error('Please check directory permissions');
+}
 
 // File upload configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const urlParts = req.url.split('/');
-    let uploadFolder;
-    
-    // Check if this is a news article upload
-    if (urlParts.indexOf('news') !== -1) {
-      uploadFolder = path.join(__dirname, 'uploads', 'news');
-    } 
-    // Check if this is an order upload
-    else if (urlParts.indexOf('orders') !== -1) {
-      const ordersIndex = urlParts.indexOf('orders');
-      let orderId = 'temp';
+    try {
+      const urlParts = req.url.split('/');
+      let uploadFolder;
       
-      if (ordersIndex !== -1 && urlParts[ordersIndex + 1]) {
-        // Extract the ID from URL (e.g., /api/orders/123)
-        const potentialId = urlParts[ordersIndex + 1];
-        if (!isNaN(potentialId)) {
-          orderId = potentialId;
+      console.log('Multer destination - URL:', req.url);
+      console.log('Multer destination - File field:', file.fieldname);
+      
+      // Check if this is a news article upload
+      if (urlParts.indexOf('news') !== -1) {
+        uploadFolder = path.join(__dirname, 'uploads', 'news');
+      } 
+      // Check if this is an order upload
+      else if (urlParts.indexOf('orders') !== -1) {
+        const ordersIndex = urlParts.indexOf('orders');
+        let orderId = 'temp';
+        
+        if (ordersIndex !== -1 && urlParts[ordersIndex + 1]) {
+          // Extract the ID from URL (e.g., /api/orders/123)
+          const potentialId = urlParts[ordersIndex + 1];
+          if (!isNaN(potentialId)) {
+            orderId = potentialId;
+          }
         }
+        
+        uploadFolder = path.join(__dirname, 'uploads', orderId);
+      } 
+      // Default fallback
+      else {
+        uploadFolder = path.join(__dirname, 'uploads', 'misc');
       }
       
-      uploadFolder = path.join(__dirname, 'uploads', orderId);
-    } 
-    // Default fallback
-    else {
-      uploadFolder = path.join(__dirname, 'uploads', 'misc');
+      console.log('Upload folder:', uploadFolder);
+      
+      // Create directory if it doesn't exist
+      if (!fs.existsSync(uploadFolder)) {
+        fs.mkdirSync(uploadFolder, { recursive: true });
+        console.log('Created upload folder:', uploadFolder);
+      }
+      
+      cb(null, uploadFolder);
+    } catch (error) {
+      console.error('Error in multer destination:', error);
+      cb(error, null);
     }
-    
-    // Create directory if it doesn't exist
-    fs.mkdirSync(uploadFolder, { recursive: true });
-    cb(null, uploadFolder);
   },
   filename: function (req, file, cb) {
-    // Use original name but make it safe for filesystem
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, Date.now() + '-' + safeName);
+    try {
+      // Use original name but make it safe for filesystem
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const filename = Date.now() + '-' + safeName;
+      console.log('Saving file as:', filename);
+      cb(null, filename);
+    } catch (error) {
+      console.error('Error in multer filename:', error);
+      cb(error, null);
+    }
   }
 });
 
@@ -77,16 +113,22 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
+    console.log('Multer fileFilter - Field:', file.fieldname, 'Filename:', file.originalname, 'Mimetype:', file.mimetype);
+    
     // Allow images and Lighburn files
     if (file.fieldname === 'screenshot' || file.fieldname === 'pictures') {
       if (!file.mimetype.startsWith('image/')) {
+        console.log('Rejected: Not an image file');
         return cb(new Error('Only image files are allowed!'));
       }
     } else if (file.fieldname === 'lighburn') {
       if (!file.originalname.endsWith('.lbrn') && !file.originalname.endsWith('.lbrn2')) {
+        console.log('Rejected: Not a Lighburn file');
         return cb(new Error('Only Lighburn files (.lbrn, .lbrn2) are allowed!'));
       }
     }
+    
+    console.log('File accepted');
     cb(null, true);
   }
 });
@@ -819,14 +861,10 @@ app.get('/api/customers', authenticateToken, (req, res) => {
   });
 });
 
-// POST endpoint to create new order with file uploads (PROTECTED)
-app.post('/api/orders', authenticateToken, upload.fields([
-  { name: 'screenshot', maxCount: 100 },
-  { name: 'pictures', maxCount: 100 },
-  { name: 'lighburn', maxCount: 100 }
-]), async (req, res) => {
+// POST endpoint to create new order (PROTECTED) - Step 1: Create order without files
+app.post('/api/orders', authenticateToken, async (req, res) => {
   console.log('Received order creation request');
-  console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
+  console.log('Body:', req.body);
   
   const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, quantity } = req.body;
 
@@ -852,16 +890,6 @@ app.post('/api/orders', authenticateToken, upload.fields([
     return res.status(400).json({ error: 'Invalid quantity' });
   }
 
-  // Process uploaded files
-  const files = req.files;
-  const screenshotPath = files?.screenshot?.[0]?.path;
-  const picturesPath = files?.pictures?.map(file => file.path).join(',');
-  const lighburnPath = files?.lighburn?.[0]?.path;
-  
-  console.log('Screenshot path:', screenshotPath);
-  console.log('Pictures path:', picturesPath);
-  console.log('Lighburn path:', lighburnPath);
-
   // Generate order details
   let orderNo;
   try {
@@ -873,104 +901,26 @@ app.post('/api/orders', authenticateToken, upload.fields([
   const date = formatDateGMT8();
   const time = formatTimeGMT8();
 
+  // Insert order WITHOUT file paths first
   const sql = `
     INSERT INTO orders (
       order_no, date, time, collection, order_status, product, 
-      price, customer_name, phone, city, agensi, sales, notes, due_date,
-      screenshot_path, pictures_path, lighburn_path, quantity
+      price, customer_name, phone, city, agensi, sales, notes, due_date, quantity
     ) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, product,
-    priceNum, customerName, phone, city || null, agensi || null, sales, notes || null, dueDate,
-    getRelativePath(screenshotPath), getRelativePath(picturesPath), getRelativePath(lighburnPath), quantityNum
-  ], async function(err) {
+    priceNum, customerName, phone, city || null, agensi || null, sales, notes || null, dueDate, quantityNum
+  ], function(err) {
     if (err) {
       console.error('Error inserting order:', err);
       return res.status(500).json({ error: 'Failed to create order' });
     }
 
     const orderId = this.lastID;
-
-    // Move files from temp to actual order folder
-    try {
-      const tempFolder = path.join(__dirname, 'uploads', 'temp');
-      const orderFolder = path.join(__dirname, 'uploads', orderId.toString());
-      
-      console.log('Order ID:', orderId);
-      console.log('Temp folder exists:', fs.existsSync(tempFolder));
-      console.log('Files to move - screenshot:', screenshotPath, 'pictures:', picturesPath, 'lighburn:', lighburnPath);
-      
-      // Only process if there are files to move
-      if (screenshotPath || picturesPath || lighburnPath) {
-        // Create order folder
-        fs.mkdirSync(orderFolder, { recursive: true });
-        
-        // Move files and update paths
-        let newScreenshotPath = screenshotPath;
-        let newPicturesPath = picturesPath;
-        let newLighburnPath = lighburnPath;
-
-        if (screenshotPath && fs.existsSync(screenshotPath)) {
-          const filename = path.basename(screenshotPath);
-          const newPath = path.join(orderFolder, filename);
-          console.log('Moving screenshot from', screenshotPath, 'to', newPath);
-          fs.renameSync(screenshotPath, newPath);
-          newScreenshotPath = getRelativePath(newPath);
-        }
-
-        if (picturesPath) {
-          const picturePaths = picturesPath.split(',');
-          const newPicturePaths = picturePaths.map(picPath => {
-            if (fs.existsSync(picPath)) {
-              const filename = path.basename(picPath);
-              const newPath = path.join(orderFolder, filename);
-              console.log('Moving picture from', picPath, 'to', newPath);
-              fs.renameSync(picPath, newPath);
-              return getRelativePath(newPath);
-            }
-            return picPath;
-          });
-          newPicturesPath = newPicturePaths.join(',');
-        }
-
-        if (lighburnPath && fs.existsSync(lighburnPath)) {
-          const filename = path.basename(lighburnPath);
-          const newPath = path.join(orderFolder, filename);
-          console.log('Moving lighburn from', lighburnPath, 'to', newPath);
-          fs.renameSync(lighburnPath, newPath);
-          newLighburnPath = getRelativePath(newPath);
-        }
-
-        // Update database with new paths (already relative)
-        const updateSql = 'UPDATE orders SET screenshot_path = ?, pictures_path = ?, lighburn_path = ? WHERE id = ?';
-        db.run(updateSql, [newScreenshotPath, newPicturesPath, newLighburnPath, orderId], (updateErr) => {
-          if (updateErr) {
-            console.error('Error updating file paths:', updateErr);
-          } else {
-            console.log('Successfully updated file paths in database');
-          }
-        });
-
-        // Clean up temp folder if empty
-        try {
-          if (fs.existsSync(tempFolder)) {
-            const filesInTemp = fs.readdirSync(tempFolder);
-            if (filesInTemp.length === 0) {
-              fs.rmdirSync(tempFolder);
-              console.log('Cleaned up empty temp folder');
-            }
-          }
-        } catch (e) {
-          console.log('Could not clean up temp folder:', e.message);
-        }
-      }
-    } catch (moveErr) {
-      console.error('Error moving files:', moveErr);
-      // Continue even if file move fails
-    }
+    console.log('Order created with ID:', orderId);
 
     res.status(201).json({
       message: 'Order created successfully',
@@ -988,20 +938,74 @@ app.post('/api/orders', authenticateToken, upload.fields([
         sales,
         notes,
         due_date: dueDate,
-        screenshot_path: screenshotPath,
-        pictures_path: picturesPath,
-        lighburn_path: lighburnPath
+        quantity: quantityNum
       }
     });
   });
 });
 
-// PUT endpoint to update order with file uploads (PROTECTED)
-app.put('/api/orders/:id', authenticateToken, upload.fields([
+// POST endpoint to upload files for an order (PROTECTED) - Step 2: Upload files after order creation
+app.post('/api/orders/:id/upload', authenticateToken, upload.fields([
   { name: 'screenshot', maxCount: 100 },
   { name: 'pictures', maxCount: 100 },
   { name: 'lighburn', maxCount: 100 }
-]), async (req, res) => {
+]), (req, res) => {
+  const { id } = req.params;
+  console.log('Received file upload request for order:', id);
+  console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
+
+  const files = req.files;
+  if (!files || Object.keys(files).length === 0) {
+    return res.status(400).json({ error: 'No files uploaded' });
+  }
+
+  console.log('Raw files object:', JSON.stringify(files, null, 2));
+
+  const screenshotPath = files?.screenshot?.[0]?.path;
+  const picturesPath = files?.pictures?.map(file => file.path).join(',');
+  const lighburnPath = files?.lighburn?.[0]?.path;
+
+  console.log('Screenshot path:', screenshotPath);
+  console.log('Pictures path:', picturesPath);
+  console.log('Lighburn path:', lighburnPath);
+
+  // Convert to relative paths for database
+  const relativeScreenshotPath = getRelativePath(screenshotPath);
+  const relativePicturesPath = getRelativePath(picturesPath);
+  const relativeLighburnPath = getRelativePath(lighburnPath);
+
+  // Update the order with file paths
+  const sql = `
+    UPDATE orders 
+    SET screenshot_path = ?, pictures_path = ?, lighburn_path = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `;
+
+  db.run(sql, [relativeScreenshotPath, relativePicturesPath, relativeLighburnPath, id], function(err) {
+    if (err) {
+      console.error('Error updating order with file paths:', err);
+      return res.status(500).json({ error: 'Failed to update order with files' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    console.log('Successfully updated order', id, 'with file paths');
+
+    res.json({
+      message: 'Files uploaded successfully',
+      files: {
+        screenshot: relativeScreenshotPath,
+        pictures: relativePicturesPath,
+        lighburn: relativeLighburnPath
+      }
+    });
+  });
+});
+
+// PUT endpoint to update order data only (PROTECTED) - files uploaded separately
+app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { collection, orderStatus, product, price, customerName, phone, city, agensi, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
 
@@ -1033,36 +1037,12 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
   }
 
   try {
-    // Clean up old files if new ones are uploaded
-    const files = req.files;
-    if (files && Object.keys(files).length > 0) {
-      await cleanupOldFiles(id);
-    }
-
-    // Process uploaded files - store relative paths
-    let fileUpdateSQL = '';
-    const fileValues = [];
-
-    if (files?.screenshot?.[0]) {
-      fileUpdateSQL += ', screenshot_path = ?';
-      fileValues.push(getRelativePath(files.screenshot[0].path));
-    }
-    if (files?.pictures?.length) {
-      fileUpdateSQL += ', pictures_path = ?';
-      const relativePaths = files.pictures.map(file => getRelativePath(file.path)).join(',');
-      fileValues.push(relativePaths);
-    }
-    if (files?.lighburn?.[0]) {
-      fileUpdateSQL += ', lighburn_path = ?';
-      fileValues.push(getRelativePath(files.lighburn[0].path));
-    }
-
     const sql = `
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
           customer_name = ?, phone = ?, city = ?, agensi = ?, sales = ?, notes = ?, due_date = ?,
           carbon_footprint = ?, quantity = ?,
-          updated_at = CURRENT_TIMESTAMP${fileUpdateSQL}
+          updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `;
 
@@ -1070,7 +1050,6 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
       collection, orderStatus, product, priceNum,
       customerName, phone, city || null, agensi || null, sales, notes || null, dueDate,
       carbonFootprintNum, quantityNum,
-      ...fileValues,
       id
     ];
 
@@ -1087,7 +1066,7 @@ app.put('/api/orders/:id', authenticateToken, upload.fields([
       res.json({ message: 'Order updated successfully' });
     });
   } catch (err) {
-    console.error('Error during file cleanup:', err);
+    console.error('Error updating order:', err);
     res.status(500).json({ error: 'Failed to update order' });
   }
 });
