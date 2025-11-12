@@ -1162,7 +1162,7 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
     // If only one file, send it directly
     if (existingPaths.length === 1) {
       // For lighburn files, rename as INV_ORDER_NO_PRODUCT_NAME.extension
-      if (type === 'lighburn') {
+      if (path.extname(existingPaths[0]) === '.lbrn' || path.extname(existingPaths[0]) === '.lbrn2') {
         const fileExtension = path.extname(existingPaths[0]); // .lbrn or .lbrn2
         const downloadName = `${order.order_no}_${order.product}${fileExtension}`;
         return res.download(existingPaths[0], downloadName);
