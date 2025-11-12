@@ -1210,6 +1210,9 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
       if (type === 'lighburn') {
         const fileExtension = path.extname(existingPaths[0]); // .lbrn or .lbrn2
         const downloadName = `${order.order_no}_${order.product}${fileExtension}`;
+        console.log('Lighburn download - Original file:', existingPaths[0]);
+        console.log('Lighburn download - Extension:', fileExtension);
+        console.log('Lighburn download - Download name:', downloadName);
         return res.download(existingPaths[0], downloadName);
       }
       return res.download(existingPaths[0]);
