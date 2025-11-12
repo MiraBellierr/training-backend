@@ -35,23 +35,36 @@ fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
 // File upload configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    // Extract orderId from URL path if available (for PUT requests)
     const urlParts = req.url.split('/');
-    const ordersIndex = urlParts.indexOf('orders');
-    let orderId = 'temp';
+    let uploadFolder;
     
-    if (ordersIndex !== -1 && urlParts[ordersIndex + 1]) {
-      // Extract the ID from URL (e.g., /api/orders/123)
-      const potentialId = urlParts[ordersIndex + 1];
-      if (!isNaN(potentialId)) {
-        orderId = potentialId;
+    // Check if this is a news article upload
+    if (urlParts.indexOf('news') !== -1) {
+      uploadFolder = path.join(__dirname, 'uploads', 'news');
+    } 
+    // Check if this is an order upload
+    else if (urlParts.indexOf('orders') !== -1) {
+      const ordersIndex = urlParts.indexOf('orders');
+      let orderId = 'temp';
+      
+      if (ordersIndex !== -1 && urlParts[ordersIndex + 1]) {
+        // Extract the ID from URL (e.g., /api/orders/123)
+        const potentialId = urlParts[ordersIndex + 1];
+        if (!isNaN(potentialId)) {
+          orderId = potentialId;
+        }
       }
+      
+      uploadFolder = path.join(__dirname, 'uploads', orderId);
+    } 
+    // Default fallback
+    else {
+      uploadFolder = path.join(__dirname, 'uploads', 'misc');
     }
     
-    const orderFolder = path.join(__dirname, 'uploads', orderId);
     // Create directory if it doesn't exist
-    fs.mkdirSync(orderFolder, { recursive: true });
-    cb(null, orderFolder);
+    fs.mkdirSync(uploadFolder, { recursive: true });
+    cb(null, uploadFolder);
   },
   filename: function (req, file, cb) {
     // Use original name but make it safe for filesystem
