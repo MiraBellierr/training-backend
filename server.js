@@ -1140,7 +1140,10 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'No files found' });
     }
 
-    // Convert relative paths to absolute paths and check if they exist
+    // Convert relative paths to absolute paths
+    const absolutePaths = relativePaths.map(relativePath => getAbsolutePath(relativePath));
+    
+    // Check if they exist
     const existingPaths = absolutePaths.filter(p => fs.existsSync(p));
     
     if (existingPaths.length === 0) {
