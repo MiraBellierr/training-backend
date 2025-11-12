@@ -83,8 +83,8 @@ const upload = multer({
         return cb(new Error('Only image files are allowed!'));
       }
     } else if (file.fieldname === 'lighburn') {
-      if (!file.originalname.endsWith('.lbrn')) {
-        return cb(new Error('Only Lighburn files (.lbrn) are allowed!'));
+      if (!file.originalname.endsWith('.lbrn') && !file.originalname.endsWith('.lbrn2')) {
+        return cb(new Error('Only Lighburn files (.lbrn, .lbrn2) are allowed!'));
       }
     }
     cb(null, true);
