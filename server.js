@@ -272,6 +272,26 @@ function initializeDatabase() {
     }
   });
 
+  // Order products table - for multiple products per order
+  db.run(`
+    CREATE TABLE IF NOT EXISTS order_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      price REAL NOT NULL,
+      deco_box INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating order_products table:', err);
+    } else {
+      console.log('Order products table ready');
+    }
+  });
+
   // Admin users table
   db.run(`
     CREATE TABLE IF NOT EXISTS admin_users (
@@ -843,7 +863,33 @@ app.get('/api/orders/:id', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    res.json(row);
+    // Fetch products for this order
+    const productsSql = 'SELECT * FROM order_products WHERE order_id = ?';
+    db.all(productsSql, [id], (prodErr, products) => {
+      if (prodErr) {
+        console.error('Error fetching products:', prodErr);
+        return res.status(500).json({ error: 'Failed to fetch products' });
+      }
+
+      // Attach products to order
+      row.products = products || [];
+      res.json(row);
+    });
+  });
+});
+
+// GET endpoint to retrieve products for an order (PROTECTED)
+app.get('/api/orders/:id/products', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const sql = 'SELECT * FROM order_products WHERE order_id = ?';
+
+  db.all(sql, [id], (err, rows) => {
+    if (err) {
+      console.error('Error fetching products:', err);
+      return res.status(500).json({ error: 'Failed to fetch products' });
+    }
+
+    res.json(rows);
   });
 });
 
@@ -877,28 +923,35 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   console.log('Received order creation request');
   console.log('Body:', req.body);
   
-  const { collection, orderStatus, product, price, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate, quantity } = req.body;
+  const { collection, orderStatus, products, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate } = req.body;
 
   // Validation
-  if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
+  if (!collection || !orderStatus || !customerName || !phone || !sales || !dueDate) {
     return res.status(400).json({ error: 'Required fields are missing' });
+  }
+
+  // Validate products array
+  if (!products || !Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ error: 'At least one product is required' });
+  }
+
+  // Validate each product
+  let totalPrice = 0;
+  for (const prod of products) {
+    if (!prod.productName || !prod.price || !prod.quantity) {
+      return res.status(400).json({ error: 'Each product must have name, price, and quantity' });
+    }
+    const price = parseFloat(prod.price);
+    const quantity = parseInt(prod.quantity);
+    if (isNaN(price) || price < 0 || isNaN(quantity) || quantity < 1) {
+      return res.status(400).json({ error: 'Invalid price or quantity in products' });
+    }
+    totalPrice += price * quantity;
   }
 
   // Validate phone number
   if (!phone.startsWith('+60')) {
     return res.status(400).json({ error: 'Phone number must start with +60' });
-  }
-
-  // Validate price
-  const priceNum = parseFloat(price);
-  if (isNaN(priceNum) || priceNum < 0) {
-    return res.status(400).json({ error: 'Invalid price' });
-  }
-
-  // Validate quantity
-  const quantityNum = quantity ? parseInt(quantity) : 1;
-  if (isNaN(quantityNum) || quantityNum < 1) {
-    return res.status(400).json({ error: 'Invalid quantity' });
   }
 
   // Generate order details
@@ -912,6 +965,12 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   const date = formatDateGMT8();
   const time = formatTimeGMT8();
 
+  // For backward compatibility, store first product in orders table
+  const firstProduct = products[0];
+  const legacyProduct = firstProduct.productName;
+  const legacyPrice = parseFloat(firstProduct.price);
+  const legacyQuantity = parseInt(firstProduct.quantity);
+
   // Insert order WITHOUT file paths first
   const sql = `
     INSERT INTO orders (
@@ -922,8 +981,8 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   `;
 
   db.run(sql, [
-    orderNo, date, time, collection, orderStatus, product,
-    priceNum, customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate, quantityNum
+    orderNo, date, time, collection, orderStatus, legacyProduct,
+    totalPrice, customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate, legacyQuantity
   ], function(err) {
     if (err) {
       console.error('Error inserting order:', err);
@@ -933,24 +992,46 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
     const orderId = this.lastID;
     console.log('Order created with ID:', orderId);
 
-    res.status(201).json({
-      message: 'Order created successfully',
-      order: {
-        id: orderId,
-        order_no: orderNo,
-        date,
-        time,
-        collection,
-        order_status: orderStatus,
-        product,
-        price: priceNum,
-        customer_name: customerName,
-        phone,
-        sales,
-        notes,
-        due_date: dueDate,
-        quantity: quantityNum
-      }
+    // Insert all products into order_products table
+    const productSql = `INSERT INTO order_products (order_id, product_name, quantity, price, deco_box) VALUES (?, ?, ?, ?, ?)`;
+    let productsInserted = 0;
+    let insertError = null;
+
+    products.forEach((prod, index) => {
+      const decoBox = prod.decoBox ? 1 : 0;
+      db.run(productSql, [orderId, prod.productName, parseInt(prod.quantity), parseFloat(prod.price), decoBox], (prodErr) => {
+        if (prodErr) {
+          console.error('Error inserting product:', prodErr);
+          insertError = prodErr;
+        }
+        productsInserted++;
+
+        // When all products are processed
+        if (productsInserted === products.length) {
+          if (insertError) {
+            return res.status(500).json({ error: 'Failed to insert products' });
+          }
+
+          res.status(201).json({
+            message: 'Order created successfully',
+            order: {
+              id: orderId,
+              order_no: orderNo,
+              date,
+              time,
+              collection,
+              order_status: orderStatus,
+              products: products,
+              total_price: totalPrice,
+              customer_name: customerName,
+              phone,
+              sales,
+              notes,
+              due_date: dueDate
+            }
+          });
+        }
+      });
     });
   });
 });
@@ -1063,21 +1144,35 @@ app.post('/api/orders/:id/upload/lighburn', authenticateToken, upload.fields([
 // PUT endpoint to update order data only (PROTECTED) - files uploaded separately
 app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { collection, orderStatus, product, price, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate, carbonFootprint, quantity } = req.body;
+  const { collection, orderStatus, products, customerName, phone, city, agensi, agensiAddress, sales, notes, dueDate, carbonFootprint } = req.body;
 
   // Validation
-  if (!collection || !orderStatus || !product || !price || !customerName || !phone || !sales || !dueDate) {
+  if (!collection || !orderStatus || !customerName || !phone || !sales || !dueDate) {
     return res.status(400).json({ error: 'Required fields are missing' });
+  }
+
+  // Validate products array
+  if (!products || !Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ error: 'At least one product is required' });
+  }
+
+  // Validate each product
+  let totalPrice = 0;
+  for (const prod of products) {
+    if (!prod.productName || !prod.price || !prod.quantity) {
+      return res.status(400).json({ error: 'Each product must have name, price, and quantity' });
+    }
+    const price = parseFloat(prod.price);
+    const quantity = parseInt(prod.quantity);
+    if (isNaN(price) || price < 0 || isNaN(quantity) || quantity < 1) {
+      return res.status(400).json({ error: 'Invalid price or quantity in products' });
+    }
+    totalPrice += price * quantity;
   }
 
   // Validate phone number
   if (!phone.startsWith('+60')) {
     return res.status(400).json({ error: 'Phone number must start with +60' });
-  }
-
-  const priceNum = parseFloat(price);
-  if (isNaN(priceNum) || priceNum < 0) {
-    return res.status(400).json({ error: 'Invalid price' });
   }
 
   // Parse carbon footprint if provided
@@ -1086,13 +1181,13 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid carbon footprint value' });
   }
 
-  // Validate quantity
-  const quantityNum = quantity ? parseInt(quantity) : 1;
-  if (isNaN(quantityNum) || quantityNum < 1) {
-    return res.status(400).json({ error: 'Invalid quantity' });
-  }
-
   try {
+    // For backward compatibility, store first product in orders table
+    const firstProduct = products[0];
+    const legacyProduct = firstProduct.productName;
+    const legacyPrice = parseFloat(firstProduct.price);
+    const legacyQuantity = parseInt(firstProduct.quantity);
+
     const sql = `
       UPDATE orders 
       SET collection = ?, order_status = ?, product = ?, price = ?, 
@@ -1103,9 +1198,9 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
     `;
 
     const values = [
-      collection, orderStatus, product, priceNum,
+      collection, orderStatus, legacyProduct, totalPrice,
       customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate,
-      carbonFootprintNum, quantityNum,
+      carbonFootprintNum, legacyQuantity,
       id
     ];
 
@@ -1119,7 +1214,38 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
         return res.status(404).json({ error: 'Order not found' });
       }
 
-      res.json({ message: 'Order updated successfully' });
+      // Delete existing products and insert new ones
+      db.run('DELETE FROM order_products WHERE order_id = ?', [id], (delErr) => {
+        if (delErr) {
+          console.error('Error deleting old products:', delErr);
+          return res.status(500).json({ error: 'Failed to update products' });
+        }
+
+        // Insert all products
+        const productSql = `INSERT INTO order_products (order_id, product_name, quantity, price, deco_box) VALUES (?, ?, ?, ?, ?)`;
+        let productsInserted = 0;
+        let insertError = null;
+
+        products.forEach((prod) => {
+          const decoBox = prod.decoBox ? 1 : 0;
+          db.run(productSql, [id, prod.productName, parseInt(prod.quantity), parseFloat(prod.price), decoBox], (prodErr) => {
+            if (prodErr) {
+              console.error('Error inserting product:', prodErr);
+              insertError = prodErr;
+            }
+            productsInserted++;
+
+            // When all products are processed
+            if (productsInserted === products.length) {
+              if (insertError) {
+                return res.status(500).json({ error: 'Failed to insert products' });
+              }
+
+              res.json({ message: 'Order updated successfully' });
+            }
+          });
+        });
+      });
     });
   } catch (err) {
     console.error('Error updating order:', err);
