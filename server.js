@@ -1213,8 +1213,16 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
         console.log('Lighburn download - Original file:', existingPaths[0]);
         console.log('Lighburn download - Extension:', fileExtension);
         console.log('Lighburn download - Download name:', downloadName);
+        
+        // Explicitly set Content-Disposition header for CORS
+        res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
         return res.download(existingPaths[0], downloadName);
       }
+      
+      const originalFilename = path.basename(existingPaths[0]);
+      res.setHeader('Content-Disposition', `attachment; filename="${originalFilename}"`);
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
       return res.download(existingPaths[0]);
     }
 
