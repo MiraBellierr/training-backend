@@ -844,7 +844,29 @@ app.get('/api/orders', authenticateToken, (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch orders' });
     }
 
-    res.json(rows);
+    // Fetch products for each order
+    const ordersWithProducts = [];
+    let processedCount = 0;
+
+    if (rows.length === 0) {
+      return res.json([]);
+    }
+
+    rows.forEach(order => {
+      const productsSql = 'SELECT * FROM order_products WHERE order_id = ?';
+      db.all(productsSql, [order.id], (prodErr, products) => {
+        if (!prodErr) {
+          order.products = products || [];
+        }
+        ordersWithProducts.push(order);
+        processedCount++;
+
+        // When all orders are processed, send response
+        if (processedCount === rows.length) {
+          res.json(ordersWithProducts);
+        }
+      });
+    });
   });
 });
 
