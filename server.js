@@ -944,62 +944,107 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   });
 });
 
-// POST endpoint to upload files for an order (PROTECTED) - Step 2: Upload files after order creation
-app.post('/api/orders/:id/upload', authenticateToken, upload.fields([
-  { name: 'screenshot', maxCount: 100 },
-  { name: 'pictures', maxCount: 100 },
-  { name: 'lighburn', maxCount: 100 }
+// POST endpoint to upload screenshot for an order (PROTECTED)
+app.post('/api/orders/:id/upload/screenshot', authenticateToken, upload.fields([
+  { name: 'screenshot', maxCount: 100 }
 ]), (req, res) => {
   const { id } = req.params;
-  console.log('Received file upload request for order:', id);
-  console.log('Files received:', req.files ? Object.keys(req.files) : 'No files');
+  console.log('Received screenshot upload request for order:', id);
 
   const files = req.files;
-  if (!files || Object.keys(files).length === 0) {
-    return res.status(400).json({ error: 'No files uploaded' });
+  if (!files?.screenshot?.[0]) {
+    return res.status(400).json({ error: 'No screenshot file uploaded' });
   }
 
-  console.log('Raw files object:', JSON.stringify(files, null, 2));
-
-  const screenshotPath = files?.screenshot?.[0]?.path;
-  const picturesPath = files?.pictures?.map(file => file.path).join(',');
-  const lighburnPath = files?.lighburn?.[0]?.path;
-
-  console.log('Screenshot path:', screenshotPath);
-  console.log('Pictures path:', picturesPath);
-  console.log('Lighburn path:', lighburnPath);
-
-  // Convert to relative paths for database
+  const screenshotPath = files.screenshot[0].path;
   const relativeScreenshotPath = getRelativePath(screenshotPath);
-  const relativePicturesPath = getRelativePath(picturesPath);
-  const relativeLighburnPath = getRelativePath(lighburnPath);
 
-  // Update the order with file paths
-  const sql = `
-    UPDATE orders 
-    SET screenshot_path = ?, pictures_path = ?, lighburn_path = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `;
+  const sql = `UPDATE orders SET screenshot_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
 
-  db.run(sql, [relativeScreenshotPath, relativePicturesPath, relativeLighburnPath, id], function(err) {
+  db.run(sql, [relativeScreenshotPath, id], function(err) {
     if (err) {
-      console.error('Error updating order with file paths:', err);
-      return res.status(500).json({ error: 'Failed to update order with files' });
+      console.error('Error updating order with screenshot:', err);
+      return res.status(500).json({ error: 'Failed to update order with screenshot' });
     }
 
     if (this.changes === 0) {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    console.log('Successfully updated order', id, 'with file paths');
-
+    console.log('Successfully updated order', id, 'with screenshot');
     res.json({
-      message: 'Files uploaded successfully',
-      files: {
-        screenshot: relativeScreenshotPath,
-        pictures: relativePicturesPath,
-        lighburn: relativeLighburnPath
-      }
+      message: 'Screenshot uploaded successfully',
+      screenshot_path: relativeScreenshotPath
+    });
+  });
+});
+
+// POST endpoint to upload pictures for an order (PROTECTED)
+app.post('/api/orders/:id/upload/pictures', authenticateToken, upload.fields([
+  { name: 'pictures', maxCount: 100 }
+]), (req, res) => {
+  const { id } = req.params;
+  console.log('Received pictures upload request for order:', id);
+
+  const files = req.files;
+  if (!files?.pictures || files.pictures.length === 0) {
+    return res.status(400).json({ error: 'No pictures uploaded' });
+  }
+
+  const picturesPath = files.pictures.map(file => file.path).join(',');
+  const relativePicturesPath = getRelativePath(picturesPath);
+
+  const sql = `UPDATE orders SET pictures_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+
+  db.run(sql, [relativePicturesPath, id], function(err) {
+    if (err) {
+      console.error('Error updating order with pictures:', err);
+      return res.status(500).json({ error: 'Failed to update order with pictures' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    console.log('Successfully updated order', id, 'with pictures');
+    res.json({
+      message: 'Pictures uploaded successfully',
+      pictures_path: relativePicturesPath
+    });
+  });
+});
+
+// POST endpoint to upload lighburn file for an order (PROTECTED)
+app.post('/api/orders/:id/upload/lighburn', authenticateToken, upload.fields([
+  { name: 'lighburn', maxCount: 100 }
+]), (req, res) => {
+  const { id } = req.params;
+  console.log('Received lighburn upload request for order:', id);
+
+  const files = req.files;
+  if (!files?.lighburn?.[0]) {
+    return res.status(400).json({ error: 'No lighburn file uploaded' });
+  }
+
+  const lighburnPath = files.lighburn[0].path;
+  const relativeLighburnPath = getRelativePath(lighburnPath);
+
+  const sql = `UPDATE orders SET lighburn_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`;
+
+  db.run(sql, [relativeLighburnPath, id], function(err) {
+    if (err) {
+      console.error('Error updating order with lighburn file:', err);
+      return res.status(500).json({ error: 'Failed to update order with lighburn file' });
+    }
+
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    console.log('Successfully updated order', id, 'with lighburn file');
+    res.json({
+      message: 'Lighburn file uploaded successfully',
+      lighburn_path: relativeLighburnPath
     });
   });
 });
@@ -1161,8 +1206,8 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
 
     // If only one file, send it directly
     if (existingPaths.length === 1) {
-      // For lighburn files, rename as INV_ORDER_NO_PRODUCT_NAME.extension
-      if (path.extname(existingPaths[0]) === '.lbrn' || path.extname(existingPaths[0]) === '.lbrn2') {
+      // For lighburn files, rename as ORDER_NO_PRODUCT_NAME.extension
+      if (type === 'lighburn') {
         const fileExtension = path.extname(existingPaths[0]); // .lbrn or .lbrn2
         const downloadName = `${order.order_no}_${order.product}${fileExtension}`;
         return res.download(existingPaths[0], downloadName);
@@ -1190,10 +1235,10 @@ app.get('/api/orders/:id/files/:type', authenticateToken, (req, res) => {
     existingPaths.forEach((filePath, index) => {
       let fileName = path.basename(filePath);
       
-      // For lighburn files, rename as INV_ORDER_NO_PRODUCT_NAME.extension
+      // For lighburn files, rename as ORDER_NO_PRODUCT_NAME.extension
       if (type === 'lighburn') {
         const fileExtension = path.extname(filePath);
-        fileName = `INV_${order.order_no}_${order.product}${fileExtension}`;
+        fileName = `${order.order_no}_${order.product}${fileExtension}`;
       }
       
       archive.file(filePath, { name: fileName });
