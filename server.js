@@ -857,6 +857,10 @@ app.post('/api/orders', authenticateToken, upload.fields([
   const screenshotPath = files?.screenshot?.[0]?.path;
   const picturesPath = files?.pictures?.map(file => file.path).join(',');
   const lighburnPath = files?.lighburn?.[0]?.path;
+  
+  console.log('Screenshot path:', screenshotPath);
+  console.log('Pictures path:', picturesPath);
+  console.log('Lighburn path:', lighburnPath);
 
   // Generate order details
   let orderNo;
@@ -895,7 +899,12 @@ app.post('/api/orders', authenticateToken, upload.fields([
       const tempFolder = path.join(__dirname, 'uploads', 'temp');
       const orderFolder = path.join(__dirname, 'uploads', orderId.toString());
       
-      if (fs.existsSync(tempFolder)) {
+      console.log('Order ID:', orderId);
+      console.log('Temp folder exists:', fs.existsSync(tempFolder));
+      console.log('Files to move - screenshot:', screenshotPath, 'pictures:', picturesPath, 'lighburn:', lighburnPath);
+      
+      // Only process if there are files to move
+      if (screenshotPath || picturesPath || lighburnPath) {
         // Create order folder
         fs.mkdirSync(orderFolder, { recursive: true });
         
@@ -904,9 +913,10 @@ app.post('/api/orders', authenticateToken, upload.fields([
         let newPicturesPath = picturesPath;
         let newLighburnPath = lighburnPath;
 
-        if (screenshotPath) {
+        if (screenshotPath && fs.existsSync(screenshotPath)) {
           const filename = path.basename(screenshotPath);
           const newPath = path.join(orderFolder, filename);
+          console.log('Moving screenshot from', screenshotPath, 'to', newPath);
           fs.renameSync(screenshotPath, newPath);
           newScreenshotPath = getRelativePath(newPath);
         }
@@ -914,17 +924,22 @@ app.post('/api/orders', authenticateToken, upload.fields([
         if (picturesPath) {
           const picturePaths = picturesPath.split(',');
           const newPicturePaths = picturePaths.map(picPath => {
-            const filename = path.basename(picPath);
-            const newPath = path.join(orderFolder, filename);
-            fs.renameSync(picPath, newPath);
-            return getRelativePath(newPath);
+            if (fs.existsSync(picPath)) {
+              const filename = path.basename(picPath);
+              const newPath = path.join(orderFolder, filename);
+              console.log('Moving picture from', picPath, 'to', newPath);
+              fs.renameSync(picPath, newPath);
+              return getRelativePath(newPath);
+            }
+            return picPath;
           });
           newPicturesPath = newPicturePaths.join(',');
         }
 
-        if (lighburnPath) {
+        if (lighburnPath && fs.existsSync(lighburnPath)) {
           const filename = path.basename(lighburnPath);
           const newPath = path.join(orderFolder, filename);
+          console.log('Moving lighburn from', lighburnPath, 'to', newPath);
           fs.renameSync(lighburnPath, newPath);
           newLighburnPath = getRelativePath(newPath);
         }
@@ -934,14 +949,22 @@ app.post('/api/orders', authenticateToken, upload.fields([
         db.run(updateSql, [newScreenshotPath, newPicturesPath, newLighburnPath, orderId], (updateErr) => {
           if (updateErr) {
             console.error('Error updating file paths:', updateErr);
+          } else {
+            console.log('Successfully updated file paths in database');
           }
         });
 
-        // Clean up temp folder
+        // Clean up temp folder if empty
         try {
-          fs.rmdirSync(tempFolder);
+          if (fs.existsSync(tempFolder)) {
+            const filesInTemp = fs.readdirSync(tempFolder);
+            if (filesInTemp.length === 0) {
+              fs.rmdirSync(tempFolder);
+              console.log('Cleaned up empty temp folder');
+            }
+          }
         } catch (e) {
-          // Ignore if folder not empty or doesn't exist
+          console.log('Could not clean up temp folder:', e.message);
         }
       }
     } catch (moveErr) {
