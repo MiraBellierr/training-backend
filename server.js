@@ -215,6 +215,8 @@ function initializeDatabase() {
       lighburn_path TEXT,
       carbon_footprint REAL,
       quantity INTEGER DEFAULT 1,
+      created_by TEXT,
+      edit_history TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -267,6 +269,24 @@ function initializeDatabase() {
           console.error('Note: agensi_address column may already exist');
         } else {
           console.log('Added agensi_address column to orders table');
+        }
+      });
+      
+      // Add created_by column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN created_by TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: created_by column may already exist');
+        } else {
+          console.log('Added created_by column to orders table');
+        }
+      });
+      
+      // Add edit_history column if it doesn't exist (for existing databases)
+      db.run(`ALTER TABLE orders ADD COLUMN edit_history TEXT`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: edit_history column may already exist');
+        } else {
+          console.log('Added edit_history column to orders table');
         }
       });
     }
@@ -1030,18 +1050,21 @@ app.post('/api/orders', authenticateToken, async (req, res) => {
   const legacyPrice = parseFloat(firstProduct.price);
   const legacyQuantity = parseInt(firstProduct.quantity);
 
+  // Get username from token
+  const createdBy = req.user.username || 'Unknown';
+  
   // Insert order WITHOUT file paths first
   const sql = `
     INSERT INTO orders (
       order_no, date, time, collection, order_status, product, 
-      price, customer_name, phone, city, agensi, agensi_address, sales, notes, due_date, quantity
+      price, customer_name, phone, city, agensi, agensi_address, sales, notes, due_date, quantity, created_by
     ) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(sql, [
     orderNo, date, time, collection, orderStatus, legacyProduct,
-    totalPrice, customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate, legacyQuantity
+    totalPrice, customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate, legacyQuantity, createdBy
   ], function(err) {
     if (err) {
       console.error('Error inserting order:', err);
@@ -1241,29 +1264,71 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
   }
 
   try {
-    // For backward compatibility, store first product in orders table
-    const firstProduct = products[0];
-    const legacyProduct = firstProduct.productName;
-    const legacyPrice = parseFloat(firstProduct.price);
-    const legacyQuantity = parseInt(firstProduct.quantity);
+    // Get current order data to track changes
+    db.get('SELECT * FROM orders WHERE id = ?', [id], (selectErr, oldOrder) => {
+      if (selectErr) {
+        console.error('Error fetching old order:', selectErr);
+        return res.status(500).json({ error: 'Failed to fetch order' });
+      }
+      
+      if (!oldOrder) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+      
+      // Track what changed
+      const changes = [];
+      const editedBy = req.user.username || 'Unknown';
+      const timestamp = new Date().toLocaleString('en-GB', { 
+        timeZone: 'Asia/Kuala_Lumpur',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      if (oldOrder.collection !== collection) changes.push('collection');
+      if (oldOrder.order_status !== orderStatus) changes.push('status');
+      if (oldOrder.customer_name !== customerName) changes.push('customer name');
+      if (oldOrder.phone !== phone) changes.push('phone');
+      if (oldOrder.city !== city) changes.push('city');
+      if (oldOrder.agensi !== agensi) changes.push('agency');
+      if (oldOrder.agensi_address !== agensiAddress) changes.push('agency address');
+      if (oldOrder.sales !== sales) changes.push('sales');
+      if (oldOrder.notes !== notes) changes.push('notes');
+      if (oldOrder.due_date !== dueDate) changes.push('due date');
+      if (oldOrder.carbon_footprint !== carbonFootprintNum) changes.push('carbon footprint');
+      
+      // Build edit history entry
+      let editHistory = oldOrder.edit_history || '';
+      if (changes.length > 0) {
+        const editEntry = `[${timestamp}] ${editedBy} edited ${changes.join(', ')}`;
+        editHistory = editHistory ? `${editHistory}\n${editEntry}` : editEntry;
+      }
+      
+      // For backward compatibility, store first product in orders table
+      const firstProduct = products[0];
+      const legacyProduct = firstProduct.productName;
+      const legacyPrice = parseFloat(firstProduct.price);
+      const legacyQuantity = parseInt(firstProduct.quantity);
 
-    const sql = `
-      UPDATE orders 
-      SET collection = ?, order_status = ?, product = ?, price = ?, 
-          customer_name = ?, phone = ?, city = ?, agensi = ?, agensi_address = ?, sales = ?, notes = ?, due_date = ?,
-          carbon_footprint = ?, quantity = ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `;
+      const sql = `
+        UPDATE orders 
+        SET collection = ?, order_status = ?, product = ?, price = ?, 
+            customer_name = ?, phone = ?, city = ?, agensi = ?, agensi_address = ?, sales = ?, notes = ?, due_date = ?,
+            carbon_footprint = ?, quantity = ?, edit_history = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `;
 
-    const values = [
-      collection, orderStatus, legacyProduct, totalPrice,
-      customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate,
-      carbonFootprintNum, legacyQuantity,
-      id
-    ];
+      const values = [
+        collection, orderStatus, legacyProduct, totalPrice,
+        customerName, phone, city || null, agensi || null, agensiAddress || null, sales, notes || null, dueDate,
+        carbonFootprintNum, legacyQuantity, editHistory,
+        id
+      ];
 
-    db.run(sql, values, function(err) {
+      db.run(sql, values, function(err) {
       if (err) {
         console.error('Error updating order:', err);
         return res.status(500).json({ error: 'Failed to update order' });
@@ -1305,6 +1370,7 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
           });
         });
       });
+    });
     });
   } catch (err) {
     console.error('Error updating order:', err);
