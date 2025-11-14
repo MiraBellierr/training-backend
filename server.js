@@ -1971,6 +1971,135 @@ app.post('/api/inventory/transactions', authenticateToken, upload.single('receip
   });
 });
 
+// PUT update transaction (PROTECTED)
+app.put('/api/inventory/transactions/:id', authenticateToken, upload.single('receipt'), (req, res) => {
+  const transactionId = req.params.id;
+  const { itemId, transactionType, quantity, unitPrice, notes, transactionDate } = req.body;
+  
+  if (!itemId || !transactionType || !quantity || !unitPrice || !transactionDate) {
+    return res.status(400).json({ error: 'All required fields must be provided' });
+  }
+  
+  if (!['IN', 'OUT'].includes(transactionType)) {
+    return res.status(400).json({ error: 'Transaction type must be IN or OUT' });
+  }
+  
+  const qty = parseInt(quantity);
+  const price = parseFloat(unitPrice);
+  const totalAmount = qty * price;
+  const receiptPath = req.file ? getRelativePath(req.file.path) : null;
+  
+  // Start transaction
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+    
+    // Get old transaction to revert inventory changes
+    db.get('SELECT * FROM inventory_transactions WHERE id = ?', [transactionId], (err, oldTransaction) => {
+      if (err || !oldTransaction) {
+        db.run('ROLLBACK');
+        console.error('Error fetching old transaction:', err);
+        return res.status(404).json({ error: 'Transaction not found' });
+      }
+      
+      // Revert old inventory changes
+      const revertSql = oldTransaction.transaction_type === 'IN'
+        ? 'UPDATE inventory_items SET quantity = quantity - ? WHERE id = ?'
+        : 'UPDATE inventory_items SET quantity = quantity + ? WHERE id = ?';
+      
+      db.run(revertSql, [oldTransaction.quantity, oldTransaction.item_id], (revertErr) => {
+        if (revertErr) {
+          db.run('ROLLBACK');
+          console.error('Error reverting inventory:', revertErr);
+          return res.status(500).json({ error: 'Failed to revert inventory' });
+        }
+        
+        // Update transaction
+        const updateFields = [];
+        const updateValues = [];
+        
+        updateFields.push('item_id = ?', 'transaction_type = ?', 'quantity = ?', 'unit_price = ?', 'total_amount = ?', 'transaction_date = ?', 'notes = ?');
+        updateValues.push(itemId, transactionType, qty, price, totalAmount, transactionDate, notes || null);
+        
+        if (req.file) {
+          updateFields.push('receipt_path = ?');
+          updateValues.push(receiptPath);
+        }
+        
+        updateValues.push(transactionId);
+        
+        const updateSql = `UPDATE inventory_transactions SET ${updateFields.join(', ')} WHERE id = ?`;
+        
+        db.run(updateSql, updateValues, function(updateErr) {
+          if (updateErr) {
+            db.run('ROLLBACK');
+            console.error('Error updating transaction:', updateErr);
+            return res.status(500).json({ error: 'Failed to update transaction' });
+          }
+          
+          // Apply new inventory changes
+          const applySql = transactionType === 'IN'
+            ? 'UPDATE inventory_items SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            : 'UPDATE inventory_items SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+          
+          db.run(applySql, [qty, itemId], (applyErr) => {
+            if (applyErr) {
+              db.run('ROLLBACK');
+              console.error('Error applying new inventory:', applyErr);
+              return res.status(500).json({ error: 'Failed to apply inventory changes' });
+            }
+            
+            db.run('COMMIT');
+            res.json({ message: 'Transaction updated successfully' });
+          });
+        });
+      });
+    });
+  });
+});
+
+// DELETE transaction (PROTECTED)
+app.delete('/api/inventory/transactions/:id', authenticateToken, (req, res) => {
+  const transactionId = req.params.id;
+  
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+    
+    // Get transaction to revert inventory changes
+    db.get('SELECT * FROM inventory_transactions WHERE id = ?', [transactionId], (err, transaction) => {
+      if (err || !transaction) {
+        db.run('ROLLBACK');
+        console.error('Error fetching transaction:', err);
+        return res.status(404).json({ error: 'Transaction not found' });
+      }
+      
+      // Revert inventory changes
+      const revertSql = transaction.transaction_type === 'IN'
+        ? 'UPDATE inventory_items SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+        : 'UPDATE inventory_items SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+      
+      db.run(revertSql, [transaction.quantity, transaction.item_id], (revertErr) => {
+        if (revertErr) {
+          db.run('ROLLBACK');
+          console.error('Error reverting inventory:', revertErr);
+          return res.status(500).json({ error: 'Failed to revert inventory' });
+        }
+        
+        // Delete transaction
+        db.run('DELETE FROM inventory_transactions WHERE id = ?', [transactionId], function(deleteErr) {
+          if (deleteErr) {
+            db.run('ROLLBACK');
+            console.error('Error deleting transaction:', deleteErr);
+            return res.status(500).json({ error: 'Failed to delete transaction' });
+          }
+          
+          db.run('COMMIT');
+          res.json({ message: 'Transaction deleted successfully' });
+        });
+      });
+    });
+  });
+});
+
 // GET monthly statistics (PROTECTED)
 app.get('/api/inventory/stats/monthly', authenticateToken, (req, res) => {
   const sql = `
