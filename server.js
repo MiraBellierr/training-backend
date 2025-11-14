@@ -1683,6 +1683,26 @@ app.delete('/api/admin/news/:id', authenticateToken, (req, res) => {
   });
 });
 
+// Upload image for editor (PROTECTED)
+app.post('/api/admin/upload-image', authenticateToken, upload.single('image'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    const imagePath = req.file.path.replace(/\\/g, '/');
+    const relativePath = imagePath.replace(path.join(__dirname).replace(/\\/g, '/') + '/', '');
+
+    res.json({ 
+      message: 'Image uploaded successfully',
+      path: relativePath
+    });
+  } catch (error) {
+    console.error('Error uploading image:', error);
+    res.status(500).json({ error: 'Failed to upload image' });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
