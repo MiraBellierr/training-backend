@@ -408,7 +408,7 @@ async function generateOrderNumber(db) {
 function formatDateGMT8() {
   const date = new Date();
   const options = { timeZone: 'Asia/Kuching', year: 'numeric', month: '2-digit', day: '2-digit' };
-  return date.toLocaleDateString('en-CA', options);
+  return date.toLocaleDateString('en-GB', options);
 }
 
 // Format time to GMT+8
