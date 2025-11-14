@@ -1287,17 +1287,24 @@ app.put('/api/orders/:id', authenticateToken, async (req, res) => {
         minute: '2-digit'
       });
       
+      // Helper function to normalize values for comparison (treat null, undefined, and empty string as equal)
+      const normalize = (value) => {
+        if (value === null || value === undefined || value === '') return null;
+        return value;
+      };
+      
+      // Only track fields that actually changed
       if (oldOrder.collection !== collection) changes.push('collection');
       if (oldOrder.order_status !== orderStatus) changes.push('status');
       if (oldOrder.customer_name !== customerName) changes.push('customer name');
       if (oldOrder.phone !== phone) changes.push('phone');
-      if (oldOrder.city !== city) changes.push('city');
-      if (oldOrder.agensi !== agensi) changes.push('agency');
-      if (oldOrder.agensi_address !== agensiAddress) changes.push('agency address');
+      if (normalize(oldOrder.city) !== normalize(city)) changes.push('city');
+      if (normalize(oldOrder.agensi) !== normalize(agensi)) changes.push('agency');
+      if (normalize(oldOrder.agensi_address) !== normalize(agensiAddress)) changes.push('agency address');
       if (oldOrder.sales !== sales) changes.push('sales');
-      if (oldOrder.notes !== notes) changes.push('notes');
+      if (normalize(oldOrder.notes) !== normalize(notes)) changes.push('notes');
       if (oldOrder.due_date !== dueDate) changes.push('due date');
-      if (oldOrder.carbon_footprint !== carbonFootprintNum) changes.push('carbon footprint');
+      if (normalize(oldOrder.carbon_footprint) !== normalize(carbonFootprintNum)) changes.push('carbon footprint');
       
       // Build edit history entry
       let editHistory = oldOrder.edit_history || '';
