@@ -380,6 +380,53 @@ function initializeDatabase() {
       console.log('News articles table ready');
     }
   });
+
+  // Inventory items table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS inventory_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      unit_price REAL NOT NULL,
+      total_price REAL NOT NULL,
+      receipt_path TEXT,
+      category TEXT DEFAULT 'General',
+      notes TEXT,
+      created_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating inventory_items table:', err);
+    } else {
+      console.log('Inventory items table ready');
+    }
+  });
+
+  // Inventory transactions table (IN/OUT)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS inventory_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      item_id INTEGER NOT NULL,
+      transaction_type TEXT NOT NULL CHECK(transaction_type IN ('IN', 'OUT')),
+      quantity INTEGER NOT NULL,
+      unit_price REAL NOT NULL,
+      total_amount REAL NOT NULL,
+      receipt_path TEXT,
+      notes TEXT,
+      created_by TEXT,
+      transaction_date TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (item_id) REFERENCES inventory_items(id) ON DELETE CASCADE
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating inventory_transactions table:', err);
+    } else {
+      console.log('Inventory transactions table ready');
+    }
+  });
 }
 
 function createDefaultAdmin() {
@@ -1701,6 +1748,250 @@ app.post('/api/admin/upload-image', authenticateToken, upload.single('image'), (
     console.error('Error uploading image:', error);
     res.status(500).json({ error: 'Failed to upload image' });
   }
+});
+
+// ============= INVENTORY ENDPOINTS =============
+// GET all inventory items (PROTECTED)
+app.get('/api/inventory/items', authenticateToken, (req, res) => {
+  const sql = 'SELECT * FROM inventory_items ORDER BY created_at DESC';
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching inventory items:', err);
+      return res.status(500).json({ error: 'Failed to fetch inventory items' });
+    }
+    res.json(rows);
+  });
+});
+
+// GET single inventory item (PROTECTED)
+app.get('/api/inventory/items/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const sql = 'SELECT * FROM inventory_items WHERE id = ?';
+  
+  db.get(sql, [id], (err, row) => {
+    if (err) {
+      console.error('Error fetching inventory item:', err);
+      return res.status(500).json({ error: 'Failed to fetch inventory item' });
+    }
+    if (!row) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    res.json(row);
+  });
+});
+
+// POST create new inventory item (PROTECTED)
+app.post('/api/inventory/items', authenticateToken, upload.single('receipt'), (req, res) => {
+  const { itemName, quantity, unitPrice, category, notes } = req.body;
+  
+  if (!itemName || !quantity || !unitPrice) {
+    return res.status(400).json({ error: 'Item name, quantity, and unit price are required' });
+  }
+  
+  const qty = parseInt(quantity);
+  const price = parseFloat(unitPrice);
+  const totalPrice = qty * price;
+  const receiptPath = req.file ? getRelativePath(req.file.path) : null;
+  const createdBy = req.user.username;
+  
+  const sql = `
+    INSERT INTO inventory_items (item_name, quantity, unit_price, total_price, receipt_path, category, notes, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  
+  db.run(sql, [itemName, qty, price, totalPrice, receiptPath, category || 'General', notes || null, createdBy], function(err) {
+    if (err) {
+      console.error('Error creating inventory item:', err);
+      return res.status(500).json({ error: 'Failed to create inventory item' });
+    }
+    
+    res.status(201).json({
+      message: 'Inventory item created successfully',
+      id: this.lastID
+    });
+  });
+});
+
+// PUT update inventory item (PROTECTED)
+app.put('/api/inventory/items/:id', authenticateToken, upload.single('receipt'), (req, res) => {
+  const { id } = req.params;
+  const { itemName, quantity, unitPrice, category, notes } = req.body;
+  
+  if (!itemName || !quantity || !unitPrice) {
+    return res.status(400).json({ error: 'Item name, quantity, and unit price are required' });
+  }
+  
+  const qty = parseInt(quantity);
+  const price = parseFloat(unitPrice);
+  const totalPrice = qty * price;
+  const receiptPath = req.file ? getRelativePath(req.file.path) : undefined;
+  
+  let sql, params;
+  if (receiptPath) {
+    sql = `
+      UPDATE inventory_items 
+      SET item_name = ?, quantity = ?, unit_price = ?, total_price = ?, receipt_path = ?, 
+          category = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `;
+    params = [itemName, qty, price, totalPrice, receiptPath, category || 'General', notes || null, id];
+  } else {
+    sql = `
+      UPDATE inventory_items 
+      SET item_name = ?, quantity = ?, unit_price = ?, total_price = ?, 
+          category = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `;
+    params = [itemName, qty, price, totalPrice, category || 'General', notes || null, id];
+  }
+  
+  db.run(sql, params, function(err) {
+    if (err) {
+      console.error('Error updating inventory item:', err);
+      return res.status(500).json({ error: 'Failed to update inventory item' });
+    }
+    
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    
+    res.json({ message: 'Inventory item updated successfully' });
+  });
+});
+
+// DELETE inventory item (PROTECTED)
+app.delete('/api/inventory/items/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  
+  db.run('DELETE FROM inventory_items WHERE id = ?', [id], function(err) {
+    if (err) {
+      console.error('Error deleting inventory item:', err);
+      return res.status(500).json({ error: 'Failed to delete inventory item' });
+    }
+    
+    if (this.changes === 0) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    
+    res.json({ message: 'Inventory item deleted successfully' });
+  });
+});
+
+// GET all transactions (PROTECTED)
+app.get('/api/inventory/transactions', authenticateToken, (req, res) => {
+  const sql = `
+    SELECT t.*, i.item_name 
+    FROM inventory_transactions t
+    JOIN inventory_items i ON t.item_id = i.id
+    ORDER BY t.created_at DESC
+  `;
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching transactions:', err);
+      return res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+    res.json(rows);
+  });
+});
+
+// GET transactions for specific item (PROTECTED)
+app.get('/api/inventory/items/:id/transactions', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const sql = `
+    SELECT * FROM inventory_transactions 
+    WHERE item_id = ? 
+    ORDER BY created_at DESC
+  `;
+  
+  db.all(sql, [id], (err, rows) => {
+    if (err) {
+      console.error('Error fetching item transactions:', err);
+      return res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+    res.json(rows);
+  });
+});
+
+// POST create transaction (IN/OUT) (PROTECTED)
+app.post('/api/inventory/transactions', authenticateToken, upload.single('receipt'), (req, res) => {
+  const { itemId, transactionType, quantity, unitPrice, notes, transactionDate } = req.body;
+  
+  if (!itemId || !transactionType || !quantity || !unitPrice || !transactionDate) {
+    return res.status(400).json({ error: 'All required fields must be provided' });
+  }
+  
+  if (!['IN', 'OUT'].includes(transactionType)) {
+    return res.status(400).json({ error: 'Transaction type must be IN or OUT' });
+  }
+  
+  const qty = parseInt(quantity);
+  const price = parseFloat(unitPrice);
+  const totalAmount = qty * price;
+  const receiptPath = req.file ? getRelativePath(req.file.path) : null;
+  const createdBy = req.user.username;
+  
+  // Start transaction
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+    
+    // Insert transaction
+    const insertSql = `
+      INSERT INTO inventory_transactions (item_id, transaction_type, quantity, unit_price, total_amount, receipt_path, notes, created_by, transaction_date)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    db.run(insertSql, [itemId, transactionType, qty, price, totalAmount, receiptPath, notes || null, createdBy, transactionDate], function(insertErr) {
+      if (insertErr) {
+        db.run('ROLLBACK');
+        console.error('Error creating transaction:', insertErr);
+        return res.status(500).json({ error: 'Failed to create transaction' });
+      }
+      
+      // Update inventory quantity
+      const updateSql = transactionType === 'IN' 
+        ? 'UPDATE inventory_items SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+        : 'UPDATE inventory_items SET quantity = quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?';
+      
+      db.run(updateSql, [qty, itemId], function(updateErr) {
+        if (updateErr) {
+          db.run('ROLLBACK');
+          console.error('Error updating inventory:', updateErr);
+          return res.status(500).json({ error: 'Failed to update inventory' });
+        }
+        
+        db.run('COMMIT');
+        res.status(201).json({
+          message: 'Transaction created successfully',
+          id: this.lastID
+        });
+      });
+    });
+  });
+});
+
+// GET monthly statistics (PROTECTED)
+app.get('/api/inventory/stats/monthly', authenticateToken, (req, res) => {
+  const sql = `
+    SELECT 
+      strftime('%Y-%m', transaction_date) as month,
+      transaction_type,
+      SUM(total_amount) as total_amount,
+      SUM(quantity) as total_quantity
+    FROM inventory_transactions
+    WHERE transaction_date >= date('now', '-12 months')
+    GROUP BY month, transaction_type
+    ORDER BY month DESC
+  `;
+  
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      console.error('Error fetching monthly stats:', err);
+      return res.status(500).json({ error: 'Failed to fetch statistics' });
+    }
+    res.json(rows);
+  });
 });
 
 // Health check endpoint
