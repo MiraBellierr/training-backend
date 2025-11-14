@@ -309,7 +309,7 @@ function initializeDatabase() {
     } else {
       console.log('Admin users table ready');
       
-      // Add email, phone, and company columns if they don't exist (for existing databases)
+      // Add email, phone, company, and role columns if they don't exist (for existing databases)
       db.run(`ALTER TABLE admin_users ADD COLUMN email TEXT`, (alterErr) => {
         if (alterErr && !alterErr.message.includes('duplicate column')) {
           console.error('Note: email column may already exist');
@@ -325,6 +325,12 @@ function initializeDatabase() {
       db.run(`ALTER TABLE admin_users ADD COLUMN company TEXT`, (alterErr) => {
         if (alterErr && !alterErr.message.includes('duplicate column')) {
           console.error('Note: company column may already exist');
+        }
+      });
+      
+      db.run(`ALTER TABLE admin_users ADD COLUMN role TEXT DEFAULT 'admin'`, (alterErr) => {
+        if (alterErr && !alterErr.message.includes('duplicate column')) {
+          console.error('Note: role column may already exist');
         }
       });
       
@@ -467,7 +473,7 @@ app.post('/api/admin/login', async (req, res) => {
 
       // Generate JWT token
       const token = jwt.sign(
-        { id: user.id, username: user.username },
+        { id: user.id, username: user.username, role: user.role || 'admin' },
         JWT_SECRET,
         { expiresIn: '24h' }
       );
@@ -475,7 +481,8 @@ app.post('/api/admin/login', async (req, res) => {
       res.json({
         message: 'Login successful',
         token,
-        username: user.username
+        username: user.username,
+        role: user.role || 'admin'
       });
     }
   );
@@ -483,7 +490,7 @@ app.post('/api/admin/login', async (req, res) => {
 
 // Create new admin endpoint (PROTECTED)
 app.post('/api/admin/create', authenticateToken, async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, role } = req.body;
 
   // Validation
   if (!username || !email || !password) {
@@ -493,6 +500,10 @@ app.post('/api/admin/create', authenticateToken, async (req, res) => {
   if (password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters long' });
   }
+
+  // Validate role
+  const validRoles = ['admin', 'production', 'sales'];
+  const userRole = role && validRoles.includes(role) ? role : 'admin';
 
   // Check if username already exists
   db.get('SELECT * FROM admin_users WHERE username = ?', [username], async (err, row) => {
@@ -509,8 +520,8 @@ app.post('/api/admin/create', authenticateToken, async (req, res) => {
 
     // Insert new admin
     db.run(
-      'INSERT INTO admin_users (username, password_hash) VALUES (?, ?)',
-      [username, passwordHash],
+      'INSERT INTO admin_users (username, password_hash, email, role) VALUES (?, ?, ?, ?)',
+      [username, passwordHash, email, userRole],
       (err) => {
         if (err) {
           console.error('Error creating new admin:', err);
@@ -518,7 +529,8 @@ app.post('/api/admin/create', authenticateToken, async (req, res) => {
         }
 
         res.status(201).json({
-          message: 'Admin account created successfully'
+          message: 'Admin account created successfully',
+          role: userRole
         });
       }
     );
@@ -573,7 +585,7 @@ app.post('/api/admin/change-password', authenticateToken, async (req, res) => {
 // Get admin profile endpoint (PROTECTED)
 app.get('/api/admin/profile', authenticateToken, (req, res) => {
   db.get(
-    'SELECT id, username, email, phone, company, created_at FROM admin_users WHERE id = ?',
+    'SELECT id, username, email, phone, company, role, created_at FROM admin_users WHERE id = ?',
     [req.user.id],
     (err, user) => {
       if (err) {
@@ -589,7 +601,7 @@ app.get('/api/admin/profile', authenticateToken, (req, res) => {
         username: user.username,
         email: user.email || `${user.username}@aanguscraft.com`,
         phone: user.phone || '+60123456789',
-        role: 'Administrator',
+        role: user.role || 'admin',
         company: user.company || 'Aangus Craft',
         created_at: user.created_at
       });
@@ -599,7 +611,7 @@ app.get('/api/admin/profile', authenticateToken, (req, res) => {
 
 // Update admin profile endpoint (PROTECTED)
 app.put('/api/admin/profile', authenticateToken, async (req, res) => {
-  const { username, email, phone, company } = req.body;
+  const { username, email, phone, company, role } = req.body;
 
   if (!username) {
     return res.status(400).json({ error: 'Username is required' });
@@ -613,6 +625,14 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
   // Validate phone format if provided (basic validation)
   if (phone && phone.length < 10) {
     return res.status(400).json({ error: 'Invalid phone number' });
+  }
+
+  // Validate role if provided
+  if (role) {
+    const validRoles = ['admin', 'production', 'sales'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be admin, production, or sales' });
+    }
   }
 
   // Check if new username is already taken by another user
@@ -646,21 +666,29 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
 
             // Update all profile fields
             db.run(
-              'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ? WHERE id = ?',
-              [username, email, phone, company, req.user.id],
+              'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ?, role = ? WHERE id = ?',
+              [username, email, phone, company, role || 'admin', req.user.id],
               (err) => {
                 if (err) {
                   console.error('Error updating profile:', err);
                   return res.status(500).json({ error: 'Failed to update profile' });
                 }
 
-                res.json({
-                  message: 'Profile updated successfully',
-                  username: username,
-                  email: email,
-                  phone: phone,
-                  company: company
-                });
+                // Fetch the updated user to get the role
+                db.get(
+                  'SELECT role FROM admin_users WHERE id = ?',
+                  [req.user.id],
+                  (err, user) => {
+                    res.json({
+                      message: 'Profile updated successfully',
+                      username: username,
+                      email: email,
+                      phone: phone,
+                      company: company,
+                      role: user?.role || 'admin'
+                    });
+                  }
+                );
               }
             );
           }
@@ -668,21 +696,29 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
       } else {
         // Update without email validation
         db.run(
-          'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ? WHERE id = ?',
-          [username, email, phone, company, req.user.id],
+          'UPDATE admin_users SET username = ?, email = ?, phone = ?, company = ?, role = ? WHERE id = ?',
+          [username, email, phone, company, role || 'admin', req.user.id],
           (err) => {
             if (err) {
               console.error('Error updating profile:', err);
               return res.status(500).json({ error: 'Failed to update profile' });
             }
 
-            res.json({
-              message: 'Profile updated successfully',
-              username: username,
-              email: email,
-              phone: phone,
-              company: company
-            });
+            // Fetch the updated user to get the role
+            db.get(
+              'SELECT role FROM admin_users WHERE id = ?',
+              [req.user.id],
+              (err, user) => {
+                res.json({
+                  message: 'Profile updated successfully',
+                  username: username,
+                  email: email,
+                  phone: phone,
+                  company: company,
+                  role: user?.role || 'admin'
+                });
+              }
+            );
           }
         );
       }
@@ -692,7 +728,7 @@ app.put('/api/admin/profile', authenticateToken, async (req, res) => {
 
 // List all admin users endpoint (PROTECTED)
 app.get('/api/admin/list', authenticateToken, (req, res) => {
-  const sql = 'SELECT id, username, email, phone, company, created_at FROM admin_users ORDER BY created_at DESC';
+  const sql = 'SELECT id, username, email, phone, company, role, created_at FROM admin_users ORDER BY created_at DESC';
 
   db.all(sql, [], (err, rows) => {
     if (err) {
@@ -707,6 +743,7 @@ app.get('/api/admin/list', authenticateToken, (req, res) => {
       email: admin.email || `${admin.username}@aanguscraft.com`,
       phone: admin.phone || '',
       company: admin.company || '',
+      role: admin.role || 'admin',
       created_at: admin.created_at
     }));
 
